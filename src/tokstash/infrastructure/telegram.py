@@ -10,19 +10,21 @@ Also auto-loads from a .env file in the project root.
 """
 
 import asyncio
+import logging
 import os
 import subprocess
 import tempfile
 import time
-import warnings
 from pathlib import Path
 
 from telethon import TelegramClient, errors
 from telethon.tl.types import DocumentAttributeVideo
 
-# Filter asyncio's "Task was destroyed but it is pending" warnings
-# that appear when Ctrl+C interrupts the persistent event loop.
-warnings.filterwarnings("ignore", message="Task was destroyed but it is pending")
+# Suppress asyncio's "Task was destroyed but it is pending" logging
+# that appears on Ctrl+C when the persistent event loop is killed.
+# These are harmless — they just mean the Telethon connection tasks
+# didn't get a chance to clean up before process exit.
+logging.getLogger("asyncio").setLevel(logging.ERROR)
 
 # Persist a single event loop + client across all upload calls.
 _loop: asyncio.AbstractEventLoop | None = None
