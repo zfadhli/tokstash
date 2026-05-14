@@ -1,6 +1,5 @@
 """Segment downloader using ffmpeg with stall detection."""
 
-import os
 import subprocess
 import time
 from pathlib import Path
@@ -65,29 +64,29 @@ class SegmentDownloader:
             str(output_path),
         ]
 
+        seg_path = Path(output_path)
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        self._monitor_progress(proc, output_path)
+        self._monitor_progress(proc, seg_path)
 
-        if not os.path.exists(output_path):
+        if not seg_path.exists():
             return False
 
-        size = os.path.getsize(output_path)
+        size = seg_path.stat().st_size
         if size < self._min_bytes:
-            os.remove(output_path)
+            seg_path.unlink(missing_ok=True)
             return False
 
         size_mb = size / 1024 / 1024
-        seg_name = Path(output_path).name
-        print(f"\r  [{seg_name}]  ✅ {size_mb:.1f} MB")
+        print(f"\r  [{seg_path.name}]  ✅ {size_mb:.1f} MB")
         return True
 
-    def _monitor_progress(self, proc: subprocess.Popen[bytes], output_path: str | Path) -> None:
+    def _monitor_progress(self, proc: subprocess.Popen[bytes], seg_path: Path) -> None:
         """Monitor ffmpeg progress and detect stalls.
 
         Args:
             proc: The running ffmpeg subprocess.
-            output_path: Path to the output file being written.
+            seg_path: Path to the output file being written.
 
         Raises:
             KeyboardInterrupt: Propagated from user's Ctrl+C during download.
@@ -95,7 +94,7 @@ class SegmentDownloader:
         start = time.time()
         last_size = 0
         stalled_since: float | None = None
-        seg_name = Path(output_path).name
+        seg_name = seg_path.name
 
         try:
             while proc.poll() is None:
@@ -104,7 +103,7 @@ class SegmentDownloader:
                 print(f"\r  [{seg_name}]  ({m}:{s:02d})        ", end="", flush=True)
 
                 try:
-                    cur = os.path.getsize(output_path)
+                    cur = seg_path.stat().st_size
                     if cur == last_size:
                         if stalled_since is None:
                             stalled_since = time.time()

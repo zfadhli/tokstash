@@ -97,8 +97,8 @@ class TelegramUploader:
             success = resp.status == 200
 
             if success:
-                os.remove(mp4_path)
-                os.remove(ts_path)
+                mp4_path.unlink(missing_ok=True)
+                ts_path.unlink(missing_ok=True)
 
             return success
         except Exception:

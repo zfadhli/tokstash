@@ -57,14 +57,21 @@ uv lock                           # Regenerate uv.lock from pyproject.toml
 ```
 project-root/
 ├── src/
-│   └── package_name/             # Main package (import as `import package_name`)
+│   └── tokstash/                 # Main package (import as `import tokstash`)
 │       ├── __init__.py
-│       ├── __main__.py           # `python -m package_name` entry
-│       ├── cli/                  # CLI entrypoints (click, typer, argparse)
-│       ├── core/                 # Business logic, no side effects
-│       ├── models/               # Data models, Pydantic, dataclasses
-│       ├── infrastructure/       # DB, HTTP clients, file I/O, external services
-│       └── _compat.py            # Version/import compatibility shims
+│       ├── __main__.py           # `python -m tokstash` entry
+│       ├── cli.py                # CLI entrypoints (click commands)
+│       ├── models/               # Domain models (Pydantic, dataclasses)
+│       │   ├── __init__.py
+│       │   └── stream.py         # StreamInfo model
+│       ├── infrastructure/       # External service clients
+│       │   ├── __init__.py
+│       │   ├── tiktok_client.py  # TikTok live page scraper
+│       │   ├── telegram.py       # Telegram Bot API uploader
+│       │   └── ffmpeg.py         # ffmpeg segment downloader
+│       └── services/             # Business logic
+│           ├── __init__.py
+│           └── monitor.py        # MonitorService orchestration
 ├── tests/
 │   ├── unit/                     # Pure unit tests, no I/O
 │   ├── integration/              # Tests with real I/O (DB, network, files)
