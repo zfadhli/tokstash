@@ -61,7 +61,15 @@ uv run tokstash monitor noxknalpotracing1 -o ./recordings -s 2 -r 60
 
 ## Telegram Upload (Optional)
 
-### 1. Create a bot
+### 1. Get API credentials
+
+Go to [my.telegram.org/apps](https://my.telegram.org/apps), log in, and create an
+application. You'll get:
+
+- **API ID** (a number like `123456`)
+- **API Hash** (a hex string)
+
+### 2. Create a bot
 
 Open Telegram, search for [@BotFather](https://t.me/BotFather), send:
 
@@ -71,19 +79,17 @@ Open Telegram, search for [@BotFather](https://t.me/BotFather), send:
 
 Follow the prompts. You'll receive a token like `1234567890:ABCdefGHIjkl...`.
 
-### 2. Get your chat ID
+### 3. Get your chat ID
 
 Message [@userinfobot](https://t.me/userinfobot) — it replies with your numeric chat ID instantly.
 
-### 3. Configure
+### 4. Configure
 
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
+Create a `.env` file in the project root:
 
 ```env
+TELEGRAM_API_ID="123456"
+TELEGRAM_API_HASH="your_api_hash_here"
 TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjkl-mnoPQRstuvWXyz"
 TELEGRAM_CHAT_ID="123456789"
 ```
@@ -93,10 +99,11 @@ Now segments will auto-upload to Telegram and be deleted from disk.
 ### Verify it works
 
 ```bash
-source .env
-curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-  -d "chat_id=${TELEGRAM_CHAT_ID}" \
-  -d "text=✅ Ready to download TikTok livestreams"
+uv run python -c "
+from tokstash.infrastructure.telegram import TelegramUploader
+u = TelegramUploader()
+print('✅ Configured' if u.is_configured() else '❌ Missing env vars')
+"
 ```
 
 ## Output
@@ -124,12 +131,16 @@ Segments are sent to Telegram as playable MP4 videos (remuxed from TS — no re-
 ```
 src/tokstash/
 ├── __init__.py
-├── __main__.py       # python -m tokstash entry
-├── cli.py            # CLI commands (download, monitor)
-├── downloader.py     # ffmpeg segment download + stall detection
-├── live_check.py     # TikTok live detection (curl_cffi)
-├── monitor.py        # auto-monitor loop + concurrent uploads
-└── uploader.py       # Telegram Bot API upload + .env loader
+├── __main__.py           # python -m tokstash entry
+├── cli.py                # CLI commands (click)
+├── models/
+│   └── stream.py         # StreamInfo data model
+├── infrastructure/
+│   ├── tiktok_client.py  # TikTok live detection (curl_cffi)
+│   ├── telegram.py       # Telegram upload (Telethon)
+│   └── ffmpeg.py         # ffmpeg segment download + stall detection
+└── services/
+    └── monitor.py        # auto-monitor loop + concurrent uploads
 ```
 
 ## How It Works
@@ -147,7 +158,7 @@ src/tokstash/
 4. **Remux**: Completed `.ts` segment is quickly remuxed to `.mp4` (`ffmpeg -c copy`,
    no re-encoding, takes ~1 second).
 
-5. **Upload**: `.mp4` is uploaded to Telegram via Bot API (`sendVideo`), then both
+5. **Upload**: `.mp4` is uploaded to Telegram via Telethon (MTProto), then both
    `.ts` and `.mp4` are deleted from disk. Upload runs in a background thread so the
    next segment starts downloading immediately.
 
@@ -159,7 +170,7 @@ src/tokstash/
 | Problem | Fix |
 |---------|-----|
 | "User is not live" when they are | TikTok WAF may have changed — try `uv sync --reinstall` |
-| Telegram upload fails | Check `.env` values, verify with the curl test above |
+| Telegram upload fails | Check `.env` values, run `uv run python -c "from tokstash.infrastructure.telegram import TelegramUploader; print(TelegramUploader().is_configured())"` |
 | ffmpeg not found | Install ffmpeg: `sudo apt install ffmpeg` or `brew install ffmpeg` |
 | `tokstash: command not found` | Run via `uv run tokstash ...` |
 | Segments still show `_part001` | Run `uv sync --reinstall` to update installed scripts |
