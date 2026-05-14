@@ -14,14 +14,17 @@ import os
 import subprocess
 import tempfile
 import time
+import warnings
 from pathlib import Path
 
 from telethon import TelegramClient, errors
 from telethon.tl.types import DocumentAttributeVideo
 
+# Filter asyncio's "Task was destroyed but it is pending" warnings
+# that appear when Ctrl+C interrupts the persistent event loop.
+warnings.filterwarnings("ignore", message="Task was destroyed but it is pending")
+
 # Persist a single event loop + client across all upload calls.
-# Using asyncio.run() per call won't work because it closes the loop
-# after each call, but the Telethon client references the original loop.
 _loop: asyncio.AbstractEventLoop | None = None
 _client: TelegramClient | None = None
 
