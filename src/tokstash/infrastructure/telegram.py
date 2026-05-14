@@ -1,19 +1,31 @@
-"""Telegram Bot API uploader for livestream segments."""
+"""Upload downloaded segments to Telegram using Telethon.
 
+Requires environment variables:
+    TELEGRAM_API_ID      — API ID from https://my.telegram.org
+    TELEGRAM_API_HASH    — API hash from https://my.telegram.org
+    TELEGRAM_BOT_TOKEN   — bot token from @BotFather
+    TELEGRAM_CHAT_ID     — chat/user ID or @username to send files to
+
+Also auto-loads from a .env file in the project root.
+"""
+
+import asyncio
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
-TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendVideo"
-"""str: Telegram Bot API endpoint for sending video files."""
+from telethon import TelegramClient
+from telethon.tl.types import DocumentAttributeVideo
+
+# Re-use a single event loop and client for all uploads in a process.
+# This avoids creating a new Telethon session per thread.
+_loop: asyncio.AbstractEventLoop | None = None
+_client: TelegramClient | None = None
 
 
 def _load_dotenv() -> None:
-    """Load .env file if it exists next to pyproject.toml or cwd.
-
-    Reads key=value pairs from the first .env found and sets them as
-    environment variables. Only sets keys that are not already set.
-    """
+    """Load .env file if it exists next to pyproject.toml or cwd."""
     candidates = [
         Path.cwd() / ".env",
         Path(__file__).resolve().parent.parent.parent.parent / ".env",
@@ -38,43 +50,59 @@ _load_dotenv()
 class TelegramUploader:
     """Upload downloaded segments to Telegram as playable videos.
 
-    Remuxes .ts to .mp4 (fast container change, no re-encode), uploads
-    via the Bot API, and deletes local files on success.
+    Uses Telethon (MTProto) for reliable file uploads. Remuxes .ts to
+    .mp4 before sending so Telegram treats it as a playable video.
 
-    Requires environment variables:
-        TELEGRAM_BOT_TOKEN  — bot token from @BotFather
-        TELEGRAM_CHAT_ID    — chat/user ID to send files to
+    Requires environment variables (loadable via .env):
+        TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     """
 
-    @staticmethod
-    def is_configured() -> bool:
+    def __init__(
+        self,
+        api_id: int | None = None,
+        api_hash: str | None = None,
+        bot_token: str | None = None,
+        chat_id: str | None = None,
+    ) -> None:
+        """Initialize the uploader.
+
+        Args:
+            api_id: Telegram API ID. Defaults to TELEGRAM_API_ID env var.
+            api_hash: Telegram API hash. Defaults to TELEGRAM_API_HASH env var.
+            bot_token: Bot token from @BotFather. Defaults to TELEGRAM_BOT_TOKEN.
+            chat_id: Chat/user ID or @username. Defaults to TELEGRAM_CHAT_ID.
+        """
+        self._api_id = api_id if api_id is not None else int(os.environ.get("TELEGRAM_API_ID", "0"))
+        self._api_hash = (
+            api_hash if api_hash is not None else os.environ.get("TELEGRAM_API_HASH", "")
+        )
+        self._bot_token = (
+            bot_token if bot_token is not None else os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        )
+        self._chat_id = chat_id if chat_id is not None else os.environ.get("TELEGRAM_CHAT_ID", "")
+
+    def is_configured(self) -> bool:
         """Check if Telegram upload is configured.
 
         Returns:
-            True if both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
-            environment variables are set and non-empty.
+            True if api_id, api_hash, bot_token, and chat_id are all set.
         """
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-        return bool(token and chat_id)
+        return bool(self._api_id and self._api_hash and self._bot_token and self._chat_id)
 
     def upload(self, file_path: str | Path, caption: str = "") -> bool:
         """Upload a .ts segment to Telegram as a playable video.
 
-        Remuxes the segment to .mp4, then uploads it via the Bot API
-        (sendVideo). On success, both the .ts and .mp4 files are deleted
-        from disk.
+        Remuxes to .mp4, then sends via Telethon. On success, both
+        .ts and .mp4 files are deleted from disk.
 
         Args:
             file_path: Path to the .ts segment file.
-            caption: Optional caption for the Telegram message.
+            caption: Optional caption for the message.
 
         Returns:
-            True if the upload succeeded (HTTP 200), False otherwise.
+            True if upload succeeded, False otherwise.
         """
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-        if not token or not chat_id:
+        if not self.is_configured():
             return False
 
         ts_path = Path(file_path)
@@ -86,84 +114,74 @@ class TelegramUploader:
             return False
 
         try:
-            boundary = b"----TokstashBoundary"
-            body = self._build_multipart(boundary, chat_id, caption or mp4_path.name, mp4_path)
-            req = __import__("urllib.request", fromlist=["Request"]).Request(
-                TELEGRAM_API_URL.format(token=token),
-                data=body,
-                headers={"Content-Type": f"multipart/form-data; boundary={boundary.decode()}"},
-            )
-            resp = __import__("urllib.request", fromlist=["urlopen"]).urlopen(req, timeout=120)
-            success = resp.status == 200
-
+            success = asyncio.run(self._async_upload(mp4_path, caption or mp4_path.name))
             if success:
                 mp4_path.unlink(missing_ok=True)
                 ts_path.unlink(missing_ok=True)
-
             return success
         except Exception:
             return False
 
+    async def _async_upload(self, mp4_path: Path, caption: str) -> bool:
+        """Send a file via Telethon.
+
+        Args:
+            mp4_path: Path to remuxed .mp4 file.
+            caption: Caption text for the message.
+
+        Returns:
+            True if sent successfully.
+        """
+        global _loop, _client
+
+        if _client is None:
+            session_dir = Path(tempfile.gettempdir()) / "tokstash"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            session_file = str(session_dir / "telegram_session")
+
+            _client = TelegramClient(
+                session_file,
+                self._api_id,
+                self._api_hash,
+            )
+            await _client.start(bot_token=self._bot_token)
+
+        # Resolve chat entity (numeric ID or @username)
+        entity = self._chat_id
+        if entity.isdigit():
+            entity = int(entity)
+
+        await _client.send_file(
+            entity,
+            str(mp4_path),
+            caption=caption,
+            attributes=[
+                DocumentAttributeVideo(
+                    duration=0,
+                    w=0,
+                    h=0,
+                    supports_streaming=True,
+                ),
+            ],
+        )
+        return True
+
     @staticmethod
     def _remux_to_mp4(ts_path: Path) -> Path | None:
-        """Remux a .ts segment to .mp4 (fast container change, no re-encode).
-
-        Uses ffmpeg with ``-c copy`` to change the container format without
-        re-encoding video/audio streams. Takes approximately 1 second.
+        """Remux .ts to .mp4 (fast container change, no re-encode).
 
         Args:
             ts_path: Path to the .ts segment file.
 
         Returns:
-            Path to the generated .mp4 file, or None if remuxing failed
-            or produced a trivially small file.
+            Path to .mp4, or None on failure.
         """
         mp4_path = ts_path.with_suffix(".mp4")
         cmd = ["ffmpeg", "-y", "-i", str(ts_path), "-c", "copy", str(mp4_path)]
         try:
-            subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-            )
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
             if mp4_path.exists() and mp4_path.stat().st_size > 1024:
                 return mp4_path
         except Exception:
             pass
         return None
-
-    @staticmethod
-    def _build_multipart(boundary: bytes, chat_id: str, filename: str, path: Path) -> bytes:
-        """Build a multipart/form-data HTTP body for Telegram file upload.
-
-        Constructs the raw multipart body with ``chat_id`` and ``video``
-        fields, reading the file contents from *path*.
-
-        Args:
-            boundary: Unique MIME boundary bytes.
-            chat_id: Telegram chat/user ID string.
-            filename: Display filename for the video field.
-            path: Path to the video file to include in the body.
-
-        Returns:
-            Complete multipart/form-data body as bytes.
-        """
-        parts = []
-        parts.append(b"--" + boundary)
-        parts.append('Content-Disposition: form-data; name="chat_id"'.encode())
-        parts.append(b"")
-        parts.append(chat_id.encode())
-
-        parts.append(b"--" + boundary)
-        parts.append(
-            f'Content-Disposition: form-data; name="video"; filename="{filename}"'.encode(),
-        )
-        parts.append(b"Content-Type: video/mp4")
-        parts.append(b"")
-        parts.append(path.read_bytes())
-
-        parts.append(b"--" + boundary + b"--")
-        parts.append(b"")
-
-        return b"\r\n".join(parts)
