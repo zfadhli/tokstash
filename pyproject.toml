@@ -1,0 +1,32 @@
+[project]
+name = "tokstash"
+version = "0.0.1"
+description = "Download and stash TikTok livestreams with auto-monitoring"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.0",
+    "curl-cffi>=0.14.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+tokstash = "tokstash.cli:main"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.format]
+quote-style = "double"

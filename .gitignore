@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# Secrets
+.env
+
+# Project output
+output/
+
+# Media files (downloaded segments)
+*.ts
+*.mp4
+
+# Ruff
+.ruff_cache/
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
