@@ -20,11 +20,19 @@ from pathlib import Path
 from telethon import TelegramClient, errors
 from telethon.tl.types import DocumentAttributeVideo
 
-# Suppress asyncio's "Task was destroyed but it is pending" logging
-# that appears on Ctrl+C when the persistent event loop is killed.
-# These are harmless — they just mean the Telethon connection tasks
-# didn't get a chance to clean up before process exit.
-logging.getLogger("asyncio").setLevel(logging.ERROR)
+# Suppress asyncio's "Task was destroyed but it is pending" messages
+# that cascade on Ctrl+C when the persistent event loop is killed.
+# The default exception handler uses asyncio.log.logger.error().
+# We filter the specific message so real errors still show.
+_asyncio_logger = logging.getLogger("asyncio")
+
+
+class _SuppressPendingTask(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Task was destroyed but it is pending" not in record.getMessage()
+
+
+_asyncio_logger.addFilter(_SuppressPendingTask())
 
 # Persist a single event loop + client across all upload calls.
 _loop: asyncio.AbstractEventLoop | None = None
