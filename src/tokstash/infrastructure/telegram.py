@@ -15,11 +15,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from telethon import TelegramClient
+from telethon import TelegramClient, errors
 from telethon.tl.types import DocumentAttributeVideo
 
-# Re-use a single event loop and client for all uploads in a process.
-# This avoids creating a new Telethon session per thread.
+# Persist a single event loop + client across all upload calls.
+# Using asyncio.run() per call won't work because it closes the loop
+# after each call, but the Telethon client references the original loop.
 _loop: asyncio.AbstractEventLoop | None = None
 _client: TelegramClient | None = None
 
@@ -114,26 +115,32 @@ class TelegramUploader:
             return False
 
         try:
-            success = asyncio.run(self._async_upload(mp4_path, caption or mp4_path.name))
+            success = self._run_sync(self._async_upload(mp4_path, caption or mp4_path.name))
             if success:
                 mp4_path.unlink(missing_ok=True)
                 ts_path.unlink(missing_ok=True)
             return success
-        except Exception:
+        except Exception as exc:
+            print(f"       ❌ Upload error: {exc}")
             return False
 
-    async def _async_upload(self, mp4_path: Path, caption: str) -> bool:
-        """Send a file via Telethon.
+    @staticmethod
+    def _run_sync(coro) -> object:
+        """Run a coroutine on the persistent event loop.
 
-        Args:
-            mp4_path: Path to remuxed .mp4 file.
-            caption: Caption text for the message.
-
-        Returns:
-            True if sent successfully.
+        Creates and reuses a single event loop + Telethon client
+        across multiple calls, avoiding asyncio.run() which closes
+        the loop after each call.
         """
         global _loop, _client
+        if _loop is None:
+            _loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_loop)
+        return _loop.run_until_complete(coro)
 
+    async def _ensure_client(self) -> TelegramClient:
+        """Get or create the shared Telethon client."""
+        global _client
         if _client is None:
             session_dir = Path(tempfile.gettempdir()) / "tokstash"
             session_dir.mkdir(parents=True, exist_ok=True)
@@ -145,37 +152,46 @@ class TelegramUploader:
                 self._api_hash,
             )
             await _client.start(bot_token=self._bot_token)
+        return _client
+
+    async def _async_upload(self, mp4_path: Path, caption: str) -> bool:
+        """Send a file via Telethon."""
+        client = await self._ensure_client()
+
+        # Disconnect/reconnect if the old connection is stale
+        if not client.is_connected():
+            await client.connect()
+            if not client.is_user_authorized():
+                await client.start(bot_token=self._bot_token)
 
         # Resolve chat entity (numeric ID or @username)
-        entity = self._chat_id
-        if entity.isdigit():
+        entity: str | int = self._chat_id
+        if isinstance(entity, str) and entity.isdigit():
             entity = int(entity)
 
-        await _client.send_file(
-            entity,
-            str(mp4_path),
-            caption=caption,
-            attributes=[
-                DocumentAttributeVideo(
-                    duration=0,
-                    w=0,
-                    h=0,
-                    supports_streaming=True,
-                ),
-            ],
-        )
-        return True
+        try:
+            await client.send_file(
+                entity,
+                str(mp4_path),
+                caption=caption,
+                attributes=[
+                    DocumentAttributeVideo(
+                        duration=0,
+                        w=0,
+                        h=0,
+                        supports_streaming=True,
+                    ),
+                ],
+            )
+            return True
+        except errors.rpcerrorlist.ChatSendMediaForbiddenError:
+            # Try sending as document instead
+            await client.send_file(entity, str(mp4_path), caption=caption)
+            return True
 
     @staticmethod
     def _remux_to_mp4(ts_path: Path) -> Path | None:
-        """Remux .ts to .mp4 (fast container change, no re-encode).
-
-        Args:
-            ts_path: Path to the .ts segment file.
-
-        Returns:
-            Path to .mp4, or None on failure.
-        """
+        """Remux .ts to .mp4 (fast container change, no re-encode)."""
         mp4_path = ts_path.with_suffix(".mp4")
         cmd = ["ffmpeg", "-y", "-i", str(ts_path), "-c", "copy", str(mp4_path)]
         try:
