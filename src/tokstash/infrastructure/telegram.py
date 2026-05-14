@@ -13,6 +13,7 @@ import asyncio
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from telethon import TelegramClient, errors
@@ -90,11 +91,17 @@ class TelegramUploader:
         """
         return bool(self._api_id and self._api_hash and self._bot_token and self._chat_id)
 
+    UPLOAD_RETRIES = 3
+    """int: Number of times to retry a failed upload."""
+    UPLOAD_RETRY_DELAY = 2  # seconds, doubles each attempt
+    """int: Initial delay between upload retries (exponential backoff)."""
+
     def upload(self, file_path: str | Path, caption: str = "") -> bool:
         """Upload a .ts segment to Telegram as a playable video.
 
-        Remuxes to .mp4, then sends via Telethon. On success, both
-        .ts and .mp4 files are deleted from disk.
+        Remuxes to .mp4, then sends via Telethon with retries and
+        exponential backoff. On success, both .ts and .mp4 files
+        are deleted from disk.
 
         Args:
             file_path: Path to the .ts segment file.
@@ -114,15 +121,26 @@ class TelegramUploader:
         if not mp4_path:
             return False
 
-        try:
-            success = self._run_sync(self._async_upload(mp4_path, caption or mp4_path.name))
-            if success:
-                mp4_path.unlink(missing_ok=True)
-                ts_path.unlink(missing_ok=True)
-            return success
-        except Exception as exc:
-            print(f"       ❌ Upload error: {exc}")
-            return False
+        cap = caption or mp4_path.name
+        last_exc: Exception | None = None
+
+        for attempt in range(self.UPLOAD_RETRIES):
+            try:
+                success = self._run_sync(self._async_upload(mp4_path, cap))
+                if success:
+                    mp4_path.unlink(missing_ok=True)
+                    ts_path.unlink(missing_ok=True)
+                    return True
+            except Exception as exc:
+                last_exc = exc
+                if attempt < self.UPLOAD_RETRIES - 1:
+                    delay = self.UPLOAD_RETRY_DELAY * (2**attempt)
+                    print(f"       🔄 Upload failed (attempt {attempt + 1}),"
+                          f" retrying in {delay}s...")
+                    time.sleep(delay)
+
+        print(f"       ❌ Upload failed after {self.UPLOAD_RETRIES} attempts: {last_exc}")
+        return False
 
     @staticmethod
     def _run_sync(coro) -> object:
