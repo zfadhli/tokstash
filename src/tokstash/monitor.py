@@ -1,4 +1,8 @@
-"""Monitor a TikTok user and download livestream segments."""
+"""Monitor a TikTok user and download livestream segments.
+
+Provides both single-session download (``run_download``) and a persistent
+24/7 monitoring loop (``run_monitor``) with automatic re-checks.
+"""
 
 import signal
 import threading
@@ -11,6 +15,16 @@ from tokstash.uploader import is_configured, upload_file
 
 
 def _pick_url(info: StreamInfo) -> str | None:
+    """Pick the best available stream URL from a StreamInfo.
+
+    Priority order: FLV HD → FLV LD → HLS HD → HLS LD.
+
+    Args:
+        info: StreamInfo with available stream URLs.
+
+    Returns:
+        The highest-priority stream URL, or None if none are available.
+    """
     return info.flv_hd or info.flv_ld or info.hls_hd or info.hls_ld
 
 
@@ -23,13 +37,23 @@ def run_download(
 ) -> tuple[int, int]:
     """Download segments until the stream ends.
 
-    Uploads happen in background threads so the next segment starts
-    downloading immediately instead of waiting for the upload.
+    Each segment is captured via ffmpeg, then uploaded to Telegram in
+    a background thread so the next segment starts downloading immediately.
 
-    Returns (segments_downloaded, total_bytes).
+    Args:
+        username: TikTok username (without @).
+        out: Directory to save segment files.
+        seg_sec: Segment length in seconds.
+        start_counter: Starting segment counter (used when resuming
+            across monitor cycles).
+        running_signal: Shared mutable flag for graceful shutdown.
+            A list with one bool element; set to ``[False]`` to stop.
+
+    Returns:
+        Tuple of (segments_downloaded, total_bytes).
     """
-    seg_counter = start_counter
     total_bytes = 0
+    seg_counter = start_counter
     running = running_signal if running_signal is not None else [True]
     pending_uploads: list[threading.Thread] = []
 
@@ -52,7 +76,7 @@ def run_download(
             print(f"       💾 {file_size:.1f} MB")
 
             if is_configured():
-                # Upload in background — don't block the next segment
+
                 def _upload(p: Path, c: str) -> None:
                     ok = upload_file(p, c)
                     print(f"       📤 Telegram: {'✅' if ok else '❌'}")
@@ -63,7 +87,6 @@ def run_download(
         else:
             break
 
-    # Wait for any remaining uploads to finish
     for t in pending_uploads:
         t.join()
 
@@ -76,10 +99,17 @@ def run_monitor(
     segment_minutes: int = 1,
     retry_seconds: int = 180,
 ) -> None:
-    """Monitor a user and download livestream segments until interrupted.
+    """Monitor a TikTok user 24/7 and download livestream segments.
 
-    Checks every ``retry_seconds`` when offline. When the user goes live,
-    downloads segments until the stream ends, then waits and checks again.
+    Checks every *retry_seconds* when the user is offline. When they go
+    live, downloads segments until the stream ends, then resumes checking.
+    Continues until interrupted (Ctrl+C).
+
+    Args:
+        username: TikTok username (without @).
+        output_dir: Directory to save segment files.
+        segment_minutes: Segment length in minutes.
+        retry_seconds: Seconds to wait between checks when offline.
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -89,6 +119,7 @@ def run_monitor(
     running = [True]
 
     def handle_sigint(*_args: object) -> None:
+        """Signal handler: set running flag to False for clean shutdown."""
         running[0] = False
         print("\n⏹️  Stopped.")
 

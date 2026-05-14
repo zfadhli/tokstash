@@ -1,12 +1,24 @@
-"""CLI interface for tokstash."""
+"""CLI interface for tokstash — download and monitor TikTok livestreams.
+
+Provides two commands via click:
+
+- ``download``: Single-session download until the stream ends.
+- ``monitor``: Persistent 24/7 monitoring with auto-download.
+"""
 
 import os
 import sys
+from pathlib import Path
 
 import click
 
 from tokstash.monitor import run_download, run_monitor
 from tokstash.uploader import is_configured
+
+MAX_RETRIES = 5
+"""int: Number of times to retry live check before reporting offline."""
+RETRY_DELAY = 10
+"""int: Seconds between live check retries."""
 
 
 @click.group()
@@ -24,18 +36,16 @@ def download(username: str, output: str, segment: int) -> None:
 
     out_dir = output
 
-    # Retry up to 5 times (10s apart) before concluding offline
-    info = get_stream_url(username)
-    for attempt in range(5):
+    for attempt in range(MAX_RETRIES):
+        info = get_stream_url(username)
         if info and info.flv_hd:
             break
-        click.echo(f"🟡 @{username} appears offline (attempt {attempt + 1}/5)")
+        click.echo(f"🟡 @{username} appears offline (attempt {attempt + 1}/{MAX_RETRIES})")
         import time
 
-        time.sleep(10)
-        info = get_stream_url(username)
+        time.sleep(RETRY_DELAY)
     else:
-        click.echo(f"🔴 @{username} is not live after 5 attempts.")
+        click.echo(f"🔴 @{username} is not live after {MAX_RETRIES} attempts.")
         sys.exit(1)
 
     os.makedirs(out_dir, exist_ok=True)
@@ -47,8 +57,6 @@ def download(username: str, output: str, segment: int) -> None:
         click.echo("   📤 Telegram upload enabled\n")
     else:
         click.echo("   💡 Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to auto-upload\n")
-
-    from pathlib import Path
 
     seg_sec = segment * 60
     n, nbytes = run_download(username, Path(out_dir), seg_sec)
@@ -88,4 +96,5 @@ def monitor(username: str, output: str, segment: int, retry: int) -> None:
 
 
 def main() -> None:
+    """Entry point for ``python -m tokstash`` and the installed CLI."""
     cli()

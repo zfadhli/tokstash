@@ -5,7 +5,11 @@ import subprocess
 import time
 from pathlib import Path
 
-STALL_SECONDS = 15  # kill segment if file doesn't grow for this long
+STALL_SECONDS = 15
+"""int: Seconds of no file growth before considering the stream stalled."""
+
+MIN_SEGMENT_BYTES = 1_048_576  # 1 MiB
+"""int: Minimum acceptable segment size in bytes. Smaller files are discarded."""
 
 
 def download_segment(
@@ -13,10 +17,24 @@ def download_segment(
     output_path: str | Path,
     duration: int = 60,
 ) -> bool:
-    """Download one segment of the livestream.
+    """Download one segment of a livestream via ffmpeg.
 
-    Returns True if the segment was successfully downloaded
-    (file exists and > 1 MB), False otherwise.
+    Spawns ffmpeg to capture *duration* seconds of the stream as MPEG-TS.
+    While ffmpeg runs, monitors the output file every second. If the file
+    doesn't grow for *STALL_SECONDS*, terminates ffmpeg early (stall
+    detection). Discards segments smaller than *MIN_SEGMENT_BYTES*.
+
+    Args:
+        stream_url: The stream URL to capture (FLV or HLS).
+        output_path: Where to save the .ts segment file.
+        duration: Segment length in seconds.
+
+    Returns:
+        True if a valid segment was saved (file exists and > 1 MB),
+        False otherwise.
+
+    Raises:
+        KeyboardInterrupt: Propagated from user's Ctrl+C during download.
     """
     cmd = [
         "ffmpeg",
@@ -45,7 +63,6 @@ def download_segment(
             m, s = divmod(elapsed, 60)
             print(f"\r  [{seg_name}]  ({m}:{s:02d})        ", end="", flush=True)
 
-            # Stall detection — file hasn't grown in 15s
             try:
                 cur = os.path.getsize(output_path)
                 if cur == last_size:
@@ -73,7 +90,7 @@ def download_segment(
         return False
 
     size = os.path.getsize(output_path)
-    if size < 1024 * 1024:
+    if size < MIN_SEGMENT_BYTES:
         os.remove(output_path)
         return False
 

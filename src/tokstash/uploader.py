@@ -4,17 +4,24 @@ Requires environment variables:
     TELEGRAM_BOT_TOKEN  - bot token from @BotFather
     TELEGRAM_CHAT_ID    - chat/user ID to send files to
 
-Also auto-loads from a .env file in the project root.
-If either is missing, files stay on disk (no Telegram upload).
+Also auto-loads from a .env file in the project root (``_load_dotenv``).
+If either variable is missing, files stay on disk (no Telegram upload).
 """
 
 import os
 import subprocess
 from pathlib import Path
 
+TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendVideo"
+"""str: Telegram Bot API endpoint for sending video files."""
+
 
 def _load_dotenv() -> None:
-    """Load .env file if it exists next to pyproject.toml or cwd."""
+    """Load .env file if it exists next to pyproject.toml or cwd.
+
+    Reads key=value pairs from the first .env found and sets them as
+    environment variables. Only sets keys that are not already set.
+    """
     candidates = [
         Path.cwd() / ".env",
         Path(__file__).resolve().parent.parent.parent / ".env",
@@ -35,20 +42,31 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-API_URL = "https://api.telegram.org/bot{token}/sendVideo"
-
 
 def is_configured() -> bool:
-    """Check if Telegram upload is configured."""
+    """Check if Telegram upload is configured.
+
+    Returns:
+        True if both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+        environment variables are set and non-empty.
+    """
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     return bool(token and chat_id)
 
 
 def _remux_to_mp4(ts_path: Path) -> Path | None:
-    """Remux .ts to .mp4 (fast, no re-encode, just container change).
+    """Remux a .ts segment to .mp4 (fast container change, no re-encode).
 
-    Returns path to the mp4 file, or None on failure.
+    Uses ffmpeg with ``-c copy`` to change the container format without
+    re-encoding video/audio streams. Takes approximately 1 second.
+
+    Args:
+        ts_path: Path to the .ts segment file.
+
+    Returns:
+        Path to the generated .mp4 file, or None if remuxing failed
+        or produced a trivially small file.
     """
     mp4_path = ts_path.with_suffix(".mp4")
     cmd = ["ffmpeg", "-y", "-i", str(ts_path), "-c", "copy", str(mp4_path)]
@@ -67,7 +85,19 @@ def _remux_to_mp4(ts_path: Path) -> Path | None:
 
 
 def upload_file(file_path: str | Path, caption: str = "") -> bool:
-    """Upload a file to Telegram as a video and delete local files on success."""
+    """Upload a .ts segment to Telegram as a playable video.
+
+    Remuxes the segment to .mp4, then uploads it via the Bot API
+    (sendVideo). On success, both the .ts and .mp4 files are deleted
+    from disk.
+
+    Args:
+        file_path: Path to the .ts segment file.
+        caption: Optional caption for the Telegram message.
+
+    Returns:
+        True if the upload succeeded (HTTP 200), False otherwise.
+    """
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -77,16 +107,15 @@ def upload_file(file_path: str | Path, caption: str = "") -> bool:
     if not ts_path.exists():
         return False
 
-    # Remux to MP4 so Telegram shows it as a playable video
     mp4_path = _remux_to_mp4(ts_path)
     if not mp4_path:
-        return False  # keep original file if remux fails
+        return False
 
     try:
-        boundary = b"----TikTokLiveBoundary"
+        boundary = b"----TokstashBoundary"
         body = _build_multipart(boundary, chat_id, caption or mp4_path.name, mp4_path)
         req = __import__("urllib.request", fromlist=["Request"]).Request(
-            API_URL.format(token=token),
+            TELEGRAM_API_URL.format(token=token),
             data=body,
             headers={"Content-Type": f"multipart/form-data; boundary={boundary.decode()}"},
         )
@@ -103,7 +132,20 @@ def upload_file(file_path: str | Path, caption: str = "") -> bool:
 
 
 def _build_multipart(boundary: bytes, chat_id: str, filename: str, path: Path) -> bytes:
-    """Build a multipart/form-data body for file upload."""
+    """Build a multipart/form-data HTTP body for Telegram file upload.
+
+    Constructs the raw multipart body with ``chat_id`` and ``video``
+    fields, reading the file contents from *path*.
+
+    Args:
+        boundary: Unique MIME boundary bytes.
+        chat_id: Telegram chat/user ID string.
+        filename: Display filename for the video field.
+        path: Path to the video file to include in the body.
+
+    Returns:
+        Complete multipart/form-data body as bytes.
+    """
     parts = []
     parts.append(b"--" + boundary)
     parts.append('Content-Disposition: form-data; name="chat_id"'.encode())

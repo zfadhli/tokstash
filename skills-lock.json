@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "python-refactor": {
+      "source": "acaprino/alfio-claude-plugins",
+      "sourceType": "github",
+      "skillPath": "plugins/python-development/skills/python-refactor/SKILL.md",
+      "computedHash": "7d42f91f12c0ff6df4293d5504ba1de3618edfcaf03f05eb8b45834796e4c89d"
+    }
+  }
+}
