@@ -19,6 +19,11 @@ package = true
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
