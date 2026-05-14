@@ -42,22 +42,22 @@ def run_download(
         ts = time.strftime("%Y%m%d_%H%M%S")
         seg_name = f"{username}_{ts}.ts"
         seg_path = out / seg_name
+        cap = f"{username}_{ts}"
 
         ok = download_segment(stream_url, seg_path, seg_sec)
         if ok:
             total_bytes += seg_path.stat().st_size
             seg_counter += 1
-            seg_num = seg_counter
             file_size = seg_path.stat().st_size / 1024 / 1024
             print(f"       💾 {file_size:.1f} MB")
 
             if is_configured():
                 # Upload in background — don't block the next segment
-                def _upload(p: Path, n: int) -> None:
-                    ok = upload_file(p, f"@{username} #{n}")
-                    print(f"       📤 Telegram #{n}: {'✅' if ok else '❌'}")
+                def _upload(p: Path, c: str) -> None:
+                    ok = upload_file(p, c)
+                    print(f"       📤 Telegram: {'✅' if ok else '❌'}")
 
-                t = threading.Thread(target=_upload, args=(seg_path, seg_num), daemon=True)
+                t = threading.Thread(target=_upload, args=(seg_path, cap), daemon=True)
                 t.start()
                 pending_uploads.append(t)
         else:
