@@ -1,5 +1,6 @@
 """Client for TikTok live page scraping with WAF bypass."""
 
+import os
 import re
 from typing import Optional
 
@@ -30,14 +31,41 @@ class TikTokClient:
     """HTTP client for checking TikTok livestream status.
 
     Uses curl_cffi with Chrome TLS impersonation to bypass TikTok's WAF.
+    Optionally accepts TikTok session cookies to access private,
+    followers-only, or age-restricted livestreams.
+
+    To get cookies:
+    1. Log into TikTok in your browser
+    2. Open DevTools → Application → Cookies → www.tiktok.com
+    3. Copy key cookies (sessionid, tt_chain_token, etc.)
+    4. Set TIKTOK_COOKIES in .env as semicolon-separated key=value pairs
+       e.g. TIKTOK_COOKIES="sessionid=abc123; tt_chain_token=def456"
     """
+
+    def __init__(self, cookies: str | None = None) -> None:
+        """Initialize the client.
+
+        Args:
+            cookies: Semicolon-separated TikTok session cookies
+                (e.g. "sessionid=abc; tt_chain_token=def").
+                Defaults to TIKTOK_COOKIES env var.
+        """
+        raw = cookies if cookies is not None else os.environ.get("TIKTOK_COOKIES", "")
+        self._cookies: dict[str, str] = {}
+        for part in raw.split(";"):
+            part = part.strip()
+            if "=" in part:
+                key, _, val = part.partition("=")
+                self._cookies[key.strip()] = val.strip()
 
     def get_stream_info(self, username: str) -> Optional[StreamInfo]:
         """Fetch the TikTok live page and extract stream URLs.
 
-        Makes a single HTTP request to the user's live page. If the page
-        indicates the user is live, parses stream URLs from the HTML using
-        regex (both FLV and HLS variants at HD and LD quality).
+        Makes a single HTTP request to the user's live page. If cookies
+        are configured, they are included for authenticated access.
+        If the page indicates the user is live, parses stream URLs from
+        the HTML using regex (both FLV and HLS variants at HD and LD
+        quality).
 
         Args:
             username: TikTok username (without @ prefix).
@@ -47,9 +75,11 @@ class TikTokClient:
             is offline or the page can't be loaded.
         """
         try:
+            headers = dict(REQUEST_HEADERS)
             resp = requests.get(
                 TIKTOK_LIVE_URL.format(username=username),
-                headers=REQUEST_HEADERS,
+                headers=headers,
+                cookies=self._cookies or None,
                 impersonate="chrome120",
             )
         except Exception:
