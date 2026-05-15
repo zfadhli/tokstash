@@ -69,9 +69,9 @@ class MonitorService:
                 break
 
             ts = time.strftime("%Y%m%d_%H%M%S")
-            seg_name = f"{username}_{ts}.ts"
+            seg_name = f"{username} {ts}.ts"
             seg_path = out / seg_name
-            cap = f"{username}_{ts}"
+            cap = f"{username} {ts}"
 
             ok = self._downloader.download(stream_url, seg_path, seg_sec)
             if ok:
