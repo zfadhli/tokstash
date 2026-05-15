@@ -1,41 +1,33 @@
-"""Tests for TelegramUploader — multipart construction."""
+"""Tests for TelegramUploader — configuration and remuxing."""
 
 from pathlib import Path
 
 from tokstash.infrastructure.telegram import TelegramUploader
 
 
-class TestTelegramMultipart:
-    """TelegramUploader._build_multipart — multipart form-data construction."""
+class TestTelegramUploaderConfig:
+    """Construction and configuration detection."""
 
-    def test_builds_valid_multipart(self, tmp_segment: Path) -> None:
-        """Produces correctly structured multipart body."""
-        boundary = b"----TestBoundary"
-        body = TelegramUploader._build_multipart(boundary, "12345", "segment.mp4", tmp_segment)
+    def test_not_configured_with_explicit_empty(self) -> None:
+        """Explicit empties are not configured."""
+        uploader = TelegramUploader(bot_token="", chat_id="")
+        assert not uploader.is_configured()
 
-        assert body.startswith(b"--" + boundary)
-        assert body.endswith(b"--" + boundary + b"--\r\n")
-        assert b'name="chat_id"' in body
-        assert b"12345" in body
-        assert b'name="video"' in body
-        assert b'filename="segment.mp4"' in body
-        assert b"Content-Type: video/mp4" in body
-        assert b"\x00" * 100 in body
+    def test_configured_with_explicit_args(self) -> None:
+        """Explicit constructor args produce a configured uploader."""
+        uploader = TelegramUploader(bot_token="tok:secret", chat_id="999")
+        assert uploader.is_configured()
 
-    def test_boundary_consistency(self, tmp_segment: Path) -> None:
-        """Same boundary used throughout."""
-        boundary = b"----Custom"
-        body = TelegramUploader._build_multipart(boundary, "999", "clip.mp4", tmp_segment)
-        assert body.count(b"--" + boundary) >= 2
+    def test_partial_args_not_configured(self) -> None:
+        """Missing chat_id means not configured."""
+        uploader = TelegramUploader(bot_token="b", chat_id="")
+        assert not uploader.is_configured()
 
-    def test_empty_file(self, tmp_path: Path) -> None:
-        """Handles empty file content."""
-        empty = tmp_path / "empty.mp4"
-        empty.write_bytes(b"")
-        body = TelegramUploader._build_multipart(b"----B", "1", "empty.mp4", empty)
-        assert b"\r\n\r\n\r\n" in body
 
-    def test_is_configured(self) -> None:
-        """is_configured returns bool (depends on env)."""
-        result = TelegramUploader.is_configured()
-        assert isinstance(result, bool)
+class TestRemuxToMp4:
+    """_remux_to_mp4 — fast container remuxing."""
+
+    def test_returns_none_for_nonexistent_file(self) -> None:
+        """Remux returns None when input file doesn't exist."""
+        result = TelegramUploader._remux_to_mp4(Path("/nonexistent/file.ts"))
+        assert result is None
