@@ -60,6 +60,47 @@ automatically. When the stream ends, waits and checks again. Press Ctrl+C to sto
 uv run tokstash monitor noxknalpotracing1 -o ./recordings -s 2 -r 60
 ```
 
+## Private / Followers-Only Livestreams
+
+To access private, age-restricted, or followers-only livestreams, you need
+to provide TikTok session cookies from a logged-in account.
+
+### Getting cookies
+
+1. Open **TikTok.com** in your browser and log in
+2. Open DevTools:
+   - **Chrome/Edge:** `F12` → **Application** tab → **Cookies** → `www.tiktok.com`
+   - **Firefox:** `F12` → **Storage** tab → **Cookies** → `www.tiktok.com`
+3. Copy the `sessionid` cookie value (the main auth cookie)
+
+### Configure
+
+Add to `.env`:
+
+```env
+TIKTOK_COOKIES="sessionid=abc123; tt_chain_token=def456"
+```
+
+`sessionid` is the minimum required. `tt_chain_token` and `msToken` can
+also be included for extra auth coverage.
+
+### Verify
+
+```bash
+uv run python -c "
+from tokstash.infrastructure.tiktok_client import TikTokClient
+client = TikTokClient()
+info = client.get_stream_info('username')
+if info:
+    print(f'✅ Room {info.room_id} - FLV HD: {bool(info.flv_hd)}')
+else:
+    print('❌ Not live or cookies invalid')
+"
+```
+
+If cookies are missing or invalid, behavior falls back to public-only
+streams (identical to before).
+
 ## Release Process
 
 This project uses [python-semantic-release](https://python-semantic-release.readthedocs.io/)
