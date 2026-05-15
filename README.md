@@ -10,6 +10,7 @@ Uploads directly to Telegram to save disk space.
 - **Stall detection**: If the stream freezes for 15 seconds, the segment is cut short and the script checks if the stream ended
 - **Telegram upload**: Uploads completed segments as playable videos to Telegram, deletes local files (free cloud storage)
 - **Concurrent uploads**: Upload runs in the background while the next segment downloads — no waiting
+- **Upload retries**: Failed uploads retry up to 3 times with exponential backoff (2s, 4s, 8s)
 - **WAF bypass**: Uses `curl_cffi` with Chrome TLS impersonation to get past TikTok's bot detection
 - **Fresh URLs**: New stream URL fetched before each segment — handles URL expiration
 
@@ -59,6 +60,55 @@ automatically. When the stream ends, waits and checks again. Press Ctrl+C to sto
 uv run tokstash monitor noxknalpotracing1 -o ./recordings -s 2 -r 60
 ```
 
+## Release Process
+
+This project uses [python-semantic-release](https://python-semantic-release.readthedocs.io/)
+to automate versioning based on [Conventional Commits](https://www.conventionalcommits.org/).
+
+### Bumping the version
+
+After merging changes to `main`, run:
+
+```bash
+export GH_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"  # GitHub personal access token
+uv run semantic-release version
+```
+
+This will:
+1. Parse commits since the last tag
+2. Determine the next version (`fix:` → patch, `feat:` → minor, `BREAKING CHANGE` → major)
+3. Update `pyproject.toml` version
+4. Generate `CHANGELOG.md`
+5. Create a git tag
+6. Push commit + tag to GitHub
+7. Create a GitHub release
+
+| Commit type | Bump | Example |
+|-------------|------|---------|
+| `fix:` | patch | `0.0.5` → `0.0.6` |
+| `feat:` | minor | `0.0.5` → `0.1.0` |
+| `BREAKING CHANGE:` | major | `0.0.5` → `1.0.0` |
+| `docs:` / `test:` / `chore:` / `refactor:` | no bump | — |
+
+### Preview without applying
+
+```bash
+uv run semantic-release version --print
+```
+
+### Skip GitHub release creation
+
+```bash
+uv run semantic-release version --no-vcs-release
+```
+
+### Getting a GitHub token
+
+1. Go to https://github.com/settings/tokens
+2. **Generate new token → Tokens (classic)**
+3. Scope: **`repo`**
+4. Set as `GH_TOKEN` environment variable
+
 ## Telegram Upload (Optional)
 
 ### 1. Create a bot
@@ -93,10 +143,11 @@ Now segments will auto-upload to Telegram and be deleted from disk.
 ### Verify it works
 
 ```bash
-source .env
-curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-  -d "chat_id=${TELEGRAM_CHAT_ID}" \
-  -d "text=✅ Ready to download TikTok livestreams"
+uv run python -c "
+from tokstash.infrastructure.telegram import TelegramUploader
+u = TelegramUploader()
+print('✅ Configured' if u.is_configured() else '❌ Missing env vars')
+"
 ```
 
 ## Output
@@ -108,12 +159,12 @@ curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 
 
 🟢 @noxknalpotracing1 is LIVE!
 
-  [noxknalpotracing1_20260515_143012.ts]  (0:42)
+  [noxknalpotracing1 20260515_143012.ts]  (0:42)
        💾 1.2 MB
-       📤 Telegram #1: ✅
-  [noxknalpotracing1_20260515_143112.ts]  (1:00)
+       📤 Telegram: ✅
+  [noxknalpotracing1 20260515_143112.ts]  (1:00)
        💾 1.3 MB
-       📤 Telegram #2: ✅
+       📤 Telegram: ✅
 🟡 Stream ended. Checking again in 3 min...
 ```
 
@@ -124,12 +175,16 @@ Segments are sent to Telegram as playable MP4 videos (remuxed from TS — no re-
 ```
 src/tokstash/
 ├── __init__.py
-├── __main__.py       # python -m tokstash entry
-├── cli.py            # CLI commands (download, monitor)
-├── downloader.py     # ffmpeg segment download + stall detection
-├── live_check.py     # TikTok live detection (curl_cffi)
-├── monitor.py        # auto-monitor loop + concurrent uploads
-└── uploader.py       # Telegram Bot API upload + .env loader
+├── __main__.py               # python -m tokstash entry
+├── cli.py                    # CLI commands (click)
+├── models/
+│   └── stream.py             # StreamInfo data model
+├── infrastructure/
+│   ├── tiktok_client.py      # TikTok live detection (curl_cffi)
+│   ├── telegram.py           # Telegram upload (python-telegram-bot)
+│   └── ffmpeg.py             # ffmpeg segment download + stall detection
+└── services/
+    └── monitor.py            # auto-monitor loop + concurrent uploads
 ```
 
 ## How It Works
@@ -147,9 +202,9 @@ src/tokstash/
 4. **Remux**: Completed `.ts` segment is quickly remuxed to `.mp4` (`ffmpeg -c copy`,
    no re-encoding, takes ~1 second).
 
-5. **Upload**: `.mp4` is uploaded to Telegram via Bot API (`sendVideo`), then both
+5. **Upload**: `.mp4` is uploaded to Telegram via python-telegram-bot, then both
    `.ts` and `.mp4` are deleted from disk. Upload runs in a background thread so the
-   next segment starts downloading immediately.
+   next segment starts downloading immediately. Failed uploads retry 3 times.
 
 6. **Monitor loop**: When the stream ends, the script waits 3 minutes, then checks
    again. If the user starts streaming again, it resumes automatically.
@@ -159,7 +214,7 @@ src/tokstash/
 | Problem | Fix |
 |---------|-----|
 | "User is not live" when they are | TikTok WAF may have changed — try `uv sync --reinstall` |
-| Telegram upload fails | Check `.env` values, verify with the curl test above |
+| Telegram upload fails | Check `.env` values, run `uv run python -c "from tokstash.infrastructure.telegram import TelegramUploader; print(TelegramUploader().is_configured())"` |
 | ffmpeg not found | Install ffmpeg: `sudo apt install ffmpeg` or `brew install ffmpeg` |
 | `tokstash: command not found` | Run via `uv run tokstash ...` |
 | Segments still show `_part001` | Run `uv sync --reinstall` to update installed scripts |
