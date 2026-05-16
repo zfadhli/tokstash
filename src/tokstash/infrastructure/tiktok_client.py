@@ -80,6 +80,49 @@ class TikTokClient:
         # All attempts hit a challenge page — inconclusive.
         return None
 
+    def verify_live(self, room_id: str) -> bool:
+        """Confirm a room is actually live via TikTok's Webcast API.
+
+        The TikTok live page sometimes serves stale roomIds / stream
+        URLs for users who recently ended a stream.  The Webcast API
+        returns the definitive live status.
+
+        Args:
+            room_id: The TikTok room identifier.
+
+        Returns:
+            True if the room is currently live, False otherwise.
+        """
+        try:
+            resp = requests.get(
+                f"https://webcast.tiktok.com/webcast/room/info/?aid=1988&room_id={room_id}",
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Referer": "https://www.tiktok.com/",
+                },
+                impersonate="chrome120",
+                timeout=10,
+            )
+        except Exception:
+            return False
+
+        if resp.status_code != 200:
+            return False
+
+        try:
+            data = resp.json()
+        except Exception:
+            return False
+
+        # status_code 10011 = room doesn't exist
+        # status_code 0 + room.status 2 = live
+        # status_code 0 + room.status 4 = ended
+        if data.get("status_code") != 0:
+            return False
+
+        room = data.get("data", {})
+        return room.get("status") == 2
+
     def get_stream_info(self, username: str) -> Optional[StreamInfo]:
         """Fetch the TikTok live page and extract stream URLs.
 
@@ -87,16 +130,15 @@ class TikTokClient:
         indicates the user is live, parses stream URLs from the HTML using
         regex (both FLV and HLS variants at HD and LD quality).
 
-        Stale/expired stream URLs are not detected here — the downloader
-        will fail fast if the URL is dead (ffmpeg exits non-zero) and the
-        segment is discarded.
+        The room is then cross-checked against TikTok's Webcast API to
+        confirm it's actually live (not a stale room from a recent stream).
 
         Args:
             username: TikTok username (without @ prefix).
 
         Returns:
             A StreamInfo with available stream URLs, or None if the user
-            is offline or the page can't be loaded.
+            is offline, the page can't be loaded, or the room is stale.
         """
         try:
             resp = requests.get(
@@ -116,6 +158,10 @@ class TikTokClient:
 
         best = info.best_url()
         if best is None:
+            return None
+
+        # Cross-check with Webcast API — this is the definitive live check
+        if not self.verify_live(info.room_id):
             return None
 
         return info
