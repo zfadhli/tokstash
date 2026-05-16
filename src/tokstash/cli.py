@@ -6,6 +6,7 @@ Provides two commands via click:
 - ``monitor``: Persistent 24/7 monitoring with auto-download.
 """
 
+import signal
 import sys
 import time
 from pathlib import Path
@@ -38,34 +39,46 @@ def download(username: str, output: str, segment: int) -> None:
     service = MonitorService(tiktok_client=tiktok, uploader=uploader)
     out_dir = Path(output)
 
-    for attempt in range(MAX_RETRIES):
-        info = tiktok.get_stream_info(username)
-        if info and info.best_url():
-            break
-        click.echo(f"🟡 @{username} appears offline (attempt {attempt + 1}/{MAX_RETRIES})")
-        time.sleep(RETRY_DELAY)
-    else:
-        click.echo(f"🔴 @{username} is not live after {MAX_RETRIES} attempts.")
-        sys.exit(1)
+    running: list[bool] = [True]
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir.resolve()
+    def handle_sigint(*_args: object) -> None:
+        """Signal handler: gracefully stop downloads on Ctrl+C."""
+        running[0] = False
+        click.echo("\n⏹️  Stopping...")
 
-    click.echo(f"🟢 @{username} is LIVE! Downloading until stream ends...")
-    click.echo(f"   📁 → {out_path}")
-    if uploader.is_configured():
-        click.echo("   📤 Telegram upload enabled\n")
-    else:
-        click.echo("   💡 Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to auto-upload\n")
+    original_handler = signal.signal(signal.SIGINT, handle_sigint)
 
-    seg_sec = segment * 60
-    n, nbytes = service.download_until_ends(username, out_dir, seg_sec)
+    try:
+        for attempt in range(MAX_RETRIES):
+            info = tiktok.get_stream_info(username)
+            if info and info.best_url():
+                break
+            click.echo(f"🟡 @{username} appears offline (attempt {attempt + 1}/{MAX_RETRIES})")
+            time.sleep(RETRY_DELAY)
+        else:
+            click.echo(f"🔴 @{username} is not live after {MAX_RETRIES} attempts.")
+            sys.exit(1)
 
-    if n > 0:
-        click.echo(f"\n✅ Downloaded {n} segments  ({nbytes / 1024 / 1024:.1f} MB)")
-    else:
-        click.echo("\n⚠️  No data received.")
-        sys.exit(1)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir.resolve()
+
+        click.echo(f"🟢 @{username} is LIVE! Downloading until stream ends...")
+        click.echo(f"   📁 → {out_path}")
+        if uploader.is_configured():
+            click.echo("   📤 Telegram upload enabled\n")
+        else:
+            click.echo("   💡 Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to auto-upload\n")
+
+        seg_sec = segment * 60
+        n, nbytes = service.download_until_ends(username, out_dir, seg_sec, running)
+
+        if n > 0:
+            click.echo(f"\n✅ Downloaded {n} segments  ({nbytes / 1024 / 1024:.1f} MB)")
+        else:
+            click.echo("\n⚠️  No data received.")
+            sys.exit(1)
+    finally:
+        signal.signal(signal.SIGINT, original_handler)
 
 
 @cli.command()

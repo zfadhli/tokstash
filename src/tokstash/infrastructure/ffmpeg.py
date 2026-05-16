@@ -35,6 +35,7 @@ class SegmentDownloader:
         stream_url: str,
         output_path: str | Path,
         duration: int = 60,
+        running_signal: list[bool] | None = None,
     ) -> bool:
         """Download one segment of a livestream via ffmpeg.
 
@@ -42,13 +43,15 @@ class SegmentDownloader:
             stream_url: The stream URL to capture (FLV or HLS).
             output_path: Where to save the .ts segment file.
             duration: Segment length in seconds.
+            running_signal: Shared mutable flag for graceful shutdown.
+                A list with one bool element; set to ``[False]`` to stop.
+                When the flag becomes False during a download, ffmpeg is
+                terminated immediately and whatever data was captured is
+                kept (even if smaller than *min_bytes*).
 
         Returns:
-            True if a valid segment was saved (file exists and > min_bytes),
+            True if a segment was saved (file exists and is non-empty),
             False otherwise.
-
-        Raises:
-            KeyboardInterrupt: Propagated from user's Ctrl+C during download.
         """
         cmd = [
             "ffmpeg",
@@ -67,13 +70,18 @@ class SegmentDownloader:
         seg_path = Path(output_path)
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        self._monitor_progress(proc, seg_path)
+        self._monitor_progress(proc, seg_path, running_signal)
 
         if not seg_path.exists():
             return False
 
         size = seg_path.stat().st_size
-        if size < self._min_bytes:
+
+        # When the download was interrupted by Ctrl+C (running_signal became
+        # False), keep the partial file even if it's tiny — we'll remux and
+        # upload whatever we got.
+        was_interrupted = running_signal is not None and not running_signal[0]
+        if size < self._min_bytes and not was_interrupted:
             seg_path.unlink(missing_ok=True)
             return False
 
@@ -81,12 +89,19 @@ class SegmentDownloader:
         print(f"\r  [{seg_path.name}]  ✅ {size_mb:.1f} MB")
         return True
 
-    def _monitor_progress(self, proc: subprocess.Popen[bytes], seg_path: Path) -> None:
+    def _monitor_progress(
+        self,
+        proc: subprocess.Popen[bytes],
+        seg_path: Path,
+        running_signal: list[bool] | None = None,
+    ) -> None:
         """Monitor ffmpeg progress and detect stalls.
 
         Args:
             proc: The running ffmpeg subprocess.
             seg_path: Path to the output file being written.
+            running_signal: Shared mutable flag for graceful shutdown.
+                When the flag becomes False, ffmpeg is terminated immediately.
 
         Raises:
             KeyboardInterrupt: Propagated from user's Ctrl+C during download.
@@ -98,6 +113,13 @@ class SegmentDownloader:
 
         try:
             while proc.poll() is None:
+                # Check for graceful shutdown via Ctrl+C
+                if running_signal is not None and not running_signal[0]:
+                    print(f"\r  [{seg_name}]  (interrupted)")
+                    proc.terminate()
+                    proc.wait()
+                    return
+
                 elapsed = int(time.time() - start)
                 m, s = divmod(elapsed, 60)
                 print(f"\r  [{seg_name}]  ({m}:{s:02d})        ", end="", flush=True)

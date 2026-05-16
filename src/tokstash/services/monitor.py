@@ -73,7 +73,7 @@ class MonitorService:
             seg_path = out / seg_name
             cap = f"{username} {ts}"
 
-            ok = self._downloader.download(stream_url, seg_path, seg_sec)
+            ok = self._downloader.download(stream_url, seg_path, seg_sec, running)
             if ok:
                 total_bytes += seg_path.stat().st_size
                 seg_counter += 1
