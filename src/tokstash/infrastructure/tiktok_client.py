@@ -32,6 +32,37 @@ class TikTokClient:
     Uses curl_cffi with Chrome TLS impersonation to bypass TikTok's WAF.
     """
 
+    def user_exists(self, username: str) -> bool:
+        """Check if a TikTok account exists (regardless of live status).
+
+        Makes a single HTTP request to the user's live page and checks
+        whether the page contains the user's ``uniqueId`` in its embedded
+        data. Non-existent accounts return a 404-style page without any
+        uniqueId, while real accounts (even offline) include it.
+
+        Args:
+            username: TikTok username (without @ prefix).
+
+        Returns:
+            True if the account exists, False otherwise.
+        """
+        try:
+            resp = requests.get(
+                TIKTOK_LIVE_URL.format(username=username),
+                headers=REQUEST_HEADERS,
+                impersonate="chrome120",
+            )
+        except Exception:
+            return False
+
+        if resp.status_code != 200:
+            return False
+
+        # Real users have their uniqueId embedded in the page data.
+        # Non-existent accounts return a page with no uniqueId at all.
+        pattern = rf'"uniqueId"\s*:\s*"{re.escape(username)}"'
+        return bool(re.search(pattern, resp.text))
+
     def get_stream_info(self, username: str) -> Optional[StreamInfo]:
         """Fetch the TikTok live page and extract stream URLs.
 

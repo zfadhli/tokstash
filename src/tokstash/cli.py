@@ -39,6 +39,11 @@ def download(username: str, output: str, segment: int) -> None:
     service = MonitorService(tiktok_client=tiktok, uploader=uploader)
     out_dir = Path(output)
 
+    # Check user exists before attempting download
+    if not tiktok.user_exists(username):
+        click.echo(f"🔴 @{username} does not exist on TikTok.")
+        sys.exit(1)
+
     running: list[bool] = [True]
 
     def handle_sigint(*_args: object) -> None:
@@ -97,6 +102,12 @@ def monitor(username: str, output: str, segment: int, retry: int) -> None:
 
     Downloads until the stream ends, then waits and checks again.
     """
+    # Check user exists before starting 24/7 monitoring
+    tiktok = TikTokClient()
+    if not tiktok.user_exists(username):
+        click.echo(f"🔴 @{username} does not exist on TikTok.")
+        sys.exit(1)
+
     service = MonitorService()
     try:
         service.run(
