@@ -35,6 +35,22 @@ class MonitorService:
         self._downloader = downloader or SegmentDownloader()
         self._uploader = uploader or TelegramUploader()
 
+    @staticmethod
+    def _wait_while_offline(
+        running: list[bool],
+        retry_seconds: int,
+    ) -> None:
+        """Sleep for *retry_seconds* while checking the shutdown flag.
+
+        Args:
+            running: Shared mutable flag; ``running[0] = False`` aborts.
+            retry_seconds: Seconds to wait between live checks.
+        """
+        for _ in range(retry_seconds):
+            if not running[0]:
+                break
+            time.sleep(1)
+
     def download_until_ends(
         self,
         username: str,
@@ -160,10 +176,7 @@ class MonitorService:
                     else:
                         print(f"🟡 Stream ended. Checking again in {retry_seconds // 60} min...")
 
-                    for _ in range(retry_seconds):
-                        if not running[0]:
-                            break
-                        time.sleep(1)
+                    self._wait_while_offline(running, retry_seconds)
                     continue
 
                 print(f"🟢 @{username} is LIVE!\n")
@@ -183,10 +196,7 @@ class MonitorService:
                     print(
                         f"🟡 @{username} is offline. Checking again in {retry_seconds // 60} min..."
                     )
-                    for _ in range(retry_seconds):
-                        if not running[0]:
-                            break
-                        time.sleep(1)
+                    self._wait_while_offline(running, retry_seconds)
         finally:
             signal.signal(signal.SIGINT, original_handler)
             mb = total_bytes / 1024 / 1024

@@ -15,6 +15,7 @@ import click
 
 from tokstash.infrastructure.telegram import TelegramUploader
 from tokstash.infrastructure.tiktok_client import TikTokClient
+from tokstash.models.stream import StreamInfo
 from tokstash.services.monitor import MonitorService
 
 
@@ -72,21 +73,7 @@ def download(
     original_handler = signal.signal(signal.SIGINT, handle_sigint)
 
     try:
-        # Check up to max_retries times, then give up
-        for attempt in range(1, max_retries + 1):
-            if not running[0]:
-                sys.exit(1)
-            info = tiktok.get_stream_info(username)
-            if info and info.best_url():
-                break
-            click.echo(f"🟡 @{username} appears offline (attempt {attempt}/{max_retries})")
-            for _ in range(retry):
-                if not running[0]:
-                    break
-                time.sleep(1)
-        else:
-            click.echo(f"🔴 @{username} is not live after {max_retries} attempts.")
-            sys.exit(1)
+        info = _wait_for_live(tiktok, username, retry, max_retries, running)
 
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir.resolve()
@@ -145,6 +132,44 @@ def monitor(username: str, output: str, segment: int, retry: int) -> None:
         )
     except KeyboardInterrupt:
         sys.exit(0)
+
+
+def _wait_for_live(
+    tiktok: TikTokClient,
+    username: str,
+    retry: int,
+    max_retries: int,
+    running: list[bool],
+) -> StreamInfo:
+    """Poll TikTok until the user goes live or max_retries exhausted.
+
+    Args:
+        tiktok: TikTok client for live checks.
+        username: TikTok username (without @).
+        retry: Seconds between checks.
+        max_retries: Number of checks before giving up.
+        running: Shared mutable flag; set ``[False]`` to abort.
+
+    Returns:
+        A StreamInfo with a valid stream URL.
+
+    Raises:
+        SystemExit: If max_retries exhausted or user pressed Ctrl+C.
+    """
+    for attempt in range(1, max_retries + 1):
+        if not running[0]:
+            sys.exit(1)
+        info = tiktok.get_stream_info(username)
+        if info and info.best_url():
+            return info
+        click.echo(f"🟡 @{username} appears offline (attempt {attempt}/{max_retries})")
+        for _ in range(retry):
+            if not running[0]:
+                break
+            time.sleep(1)
+
+    click.echo(f"🔴 @{username} is not live after {max_retries} attempts.")
+    sys.exit(1)
 
 
 def main() -> None:
