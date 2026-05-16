@@ -114,6 +114,11 @@ class MonitorService:
         live, downloads segments until the stream ends, then resumes checking.
         Continues until interrupted (Ctrl+C).
 
+        TikTok sometimes serves stale roomIds / stream URLs briefly after
+        a stream ends, causing the tool to loop "LIVE!" → download (0 bytes)
+        → "LIVE!" endlessly.  We track stale roomIds and skip them, and enter
+        the offline retry loop whenever a download yields zero bytes.
+
         Args:
             username: TikTok username (without @).
             output_dir: Directory to save segment files.
@@ -126,6 +131,7 @@ class MonitorService:
         total_bytes = 0
         total_segments = 0
         running = [True]
+        stale_room_ids: set[str] = set()
 
         def handle_sigint(*_args: object) -> None:
             """Signal handler: set running flag to False for clean shutdown."""
@@ -147,6 +153,11 @@ class MonitorService:
             while running[0]:
                 info = self._tiktok.get_stream_info(username)
                 stream_url = info.best_url() if info else None
+                room_id = info.room_id if info else None
+
+                # Skip known stale rooms that previously yielded zero bytes
+                if room_id and room_id in stale_room_ids:
+                    stream_url = None
 
                 if not stream_url:
                     if total_segments == 0:
@@ -171,9 +182,21 @@ class MonitorService:
                 total_segments += n
                 total_bytes += nbytes
 
-                mb = nbytes / 1024 / 1024
                 if nbytes > 0:
+                    mb = nbytes / 1024 / 1024
                     print(f"\n📊 Downloaded {mb:.1f} MB in {n} segments\n")
+                else:
+                    # Zero bytes means the URL was stale (stream already
+                    # ended).  Mark this room so we skip it on re-check.
+                    if room_id:
+                        stale_room_ids.add(room_id)
+                    print(
+                        f"🟡 @{username} is offline. Checking again in {retry_seconds // 60} min..."
+                    )
+                    for _ in range(retry_seconds):
+                        if not running[0]:
+                            break
+                        time.sleep(1)
         finally:
             signal.signal(signal.SIGINT, original_handler)
             mb = total_bytes / 1024 / 1024
