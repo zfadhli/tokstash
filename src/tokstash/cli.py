@@ -73,7 +73,7 @@ def download(
     original_handler = signal.signal(signal.SIGINT, handle_sigint)
 
     try:
-        info = _wait_for_live(tiktok, username, retry, max_retries, running)
+        _wait_for_live(tiktok, username, retry, max_retries, running)
 
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir.resolve()
