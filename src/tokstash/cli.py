@@ -34,7 +34,20 @@ def cli() -> None:
     type=int,
     help="Seconds between checks when offline (default: 10)",
 )
-def download(username: str, output: str, segment: int, retry: int) -> None:
+@click.option(
+    "-m",
+    "--max-retries",
+    default=5,
+    type=int,
+    help="Max offline checks before giving up (default: 5)",
+)
+def download(
+    username: str,
+    output: str,
+    segment: int,
+    retry: int,
+    max_retries: int,
+) -> None:
     """Download livestream until the user goes offline, then stop."""
     tiktok = TikTokClient()
     uploader = TelegramUploader()
@@ -59,18 +72,20 @@ def download(username: str, output: str, segment: int, retry: int) -> None:
     original_handler = signal.signal(signal.SIGINT, handle_sigint)
 
     try:
-        # Keep checking until the user goes live or Ctrl+C is pressed
-        while running[0]:
+        # Check up to max_retries times, then give up
+        for attempt in range(1, max_retries + 1):
+            if not running[0]:
+                sys.exit(1)
             info = tiktok.get_stream_info(username)
             if info and info.best_url():
                 break
-            click.echo(f"🟡 @{username} is offline. Checking every {retry}s...")
+            click.echo(f"🟡 @{username} appears offline (attempt {attempt}/{max_retries})")
             for _ in range(retry):
                 if not running[0]:
                     break
                 time.sleep(1)
-
-        if not running[0]:
+        else:
+            click.echo(f"🔴 @{username} is not live after {max_retries} attempts.")
             sys.exit(1)
 
         out_dir.mkdir(parents=True, exist_ok=True)
