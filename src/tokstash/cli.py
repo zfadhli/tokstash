@@ -17,11 +17,6 @@ from tokstash.infrastructure.telegram import TelegramUploader
 from tokstash.infrastructure.tiktok_client import TikTokClient
 from tokstash.services.monitor import MonitorService
 
-MAX_RETRIES = 5
-"""int: Number of times to retry live check before reporting offline."""
-RETRY_DELAY = 10
-"""int: Seconds between live check retries."""
-
 
 @click.group()
 def cli() -> None:
@@ -32,7 +27,14 @@ def cli() -> None:
 @click.argument("username")
 @click.option("-o", "--output", default="./output", help="Output directory (default: ./output)")
 @click.option("-s", "--segment", default=1, type=int, help="Segment length in minutes (default: 1)")
-def download(username: str, output: str, segment: int) -> None:
+@click.option(
+    "-r",
+    "--retry",
+    default=10,
+    type=int,
+    help="Seconds between checks when offline (default: 10)",
+)
+def download(username: str, output: str, segment: int, retry: int) -> None:
     """Download livestream until the user goes offline, then stop."""
     tiktok = TikTokClient()
     uploader = TelegramUploader()
@@ -45,7 +47,7 @@ def download(username: str, output: str, segment: int) -> None:
         click.echo(f"🔴 @{username} does not exist on TikTok.")
         sys.exit(1)
     elif exists is None:
-        click.echo("🟡 Could not verify user — TikTok challenge page. Retrying...")
+        click.echo("🟡 Could not verify user — TikTok challenge page. Continuing anyway...")
 
     running: list[bool] = [True]
 
@@ -57,14 +59,18 @@ def download(username: str, output: str, segment: int) -> None:
     original_handler = signal.signal(signal.SIGINT, handle_sigint)
 
     try:
-        for attempt in range(MAX_RETRIES):
+        # Keep checking until the user goes live or Ctrl+C is pressed
+        while running[0]:
             info = tiktok.get_stream_info(username)
             if info and info.best_url():
                 break
-            click.echo(f"🟡 @{username} appears offline (attempt {attempt + 1}/{MAX_RETRIES})")
-            time.sleep(RETRY_DELAY)
-        else:
-            click.echo(f"🔴 @{username} is not live after {MAX_RETRIES} attempts.")
+            click.echo(f"🟡 @{username} is offline. Checking every {retry}s...")
+            for _ in range(retry):
+                if not running[0]:
+                    break
+                time.sleep(1)
+
+        if not running[0]:
             sys.exit(1)
 
         out_dir.mkdir(parents=True, exist_ok=True)
