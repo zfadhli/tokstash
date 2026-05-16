@@ -8,10 +8,14 @@ Uploads directly to Telegram to save disk space.
 - **Auto-monitor**: Watches for streams 24/7 — starts downloading when the user goes live, waits and retries when offline
 - **1-minute segments**: Short playable chunks instead of one giant file (safer, no corruption from interrupted downloads)
 - **Stall detection**: If the stream freezes for 15 seconds, the segment is cut short and the script checks if the stream ended
+- **Graceful Ctrl+C**: Press Ctrl+C mid-download — the partial segment is remuxed to MP4 and uploaded to Telegram
+- **Short stream support**: Even a 7-second clip gets uploaded — no more "No data received" for brief streams
 - **Telegram upload**: Uploads completed segments as playable videos to Telegram, deletes local files (free cloud storage)
 - **Concurrent uploads**: Upload runs in the background while the next segment downloads — no waiting
 - **Upload retries**: Failed uploads retry up to 3 times with exponential backoff (2s, 4s, 8s)
 - **WAF bypass**: Uses `curl_cffi` with Chrome TLS impersonation to get past TikTok's bot detection
+- **Webcast verification**: Cross-checks room IDs against TikTok's Webcast API — eliminates stale-room false positives
+- **User existence check**: Rejects typos/non-existent usernames instantly instead of retrying
 - **Fresh URLs**: New stream URL fetched before each segment — handles URL expiration
 
 ## Requirements
@@ -37,7 +41,7 @@ uv sync
 uv run tokstash download <username>
 ```
 
-Downloads 1-minute segments until the stream ends, then exits.
+Checks every 10 seconds. Retries up to 5 times, then gives up.
 
 ### Auto-monitor — runs forever, downloads whenever live
 
@@ -45,19 +49,25 @@ Downloads 1-minute segments until the stream ends, then exits.
 uv run tokstash monitor <username>
 ```
 
-Checks every 3 minutes when offline. When the user goes live, starts downloading
+Checks every 5 minutes when offline. When the user goes live, starts downloading
 automatically. When the stream ends, waits and checks again. Press Ctrl+C to stop.
 
 ### Options
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-o, --output` | `./output` | Where to save segments |
-| `-s, --segment` | `1` | Segment length in minutes |
-| `-r, --retry` | `300` | Seconds between checks when offline (monitor only) |
+| Command | Flag | Default | Description |
+|---------|------|---------|-------------|
+| both | `-o, --output` | `./output` | Where to save segments |
+| both | `-s, --segment` | `1` | Segment length in minutes |
+| `download` | `-r, --retry` | `10` | Seconds between checks when offline |
+| `download` | `-m, --max-retries` | `5` | Max offline checks before giving up |
+| `monitor` | `-r, --retry` | `300` | Seconds between checks when offline |
 
 ```bash
+# Monitor with custom check interval
 uv run tokstash monitor noxknalpotracing1 -o ./recordings -s 2 -r 60
+
+# Download, check every 30s, give up after 20 tries
+uv run tokstash download noxknalpotracing1 -r 30 -m 20
 ```
 
 ## Release Process
@@ -140,6 +150,14 @@ TELEGRAM_CHAT_ID="123456789"
 
 Now segments will auto-upload to Telegram and be deleted from disk.
 
+### Increase upload limit (optional, 50 MB default)
+
+The Telegram Bot API limits file uploads to **50 MB**. If your segments exceed this:
+
+1. In Telegram, message [@BotFather](https://t.me/BotFather)
+2. Send `/setuploadsize` → select your bot → enter `2000000000` (2 GB max)
+3. No code changes needed — the tool will use whatever limit BotFather allows
+
 ### Verify it works
 
 ```bash
@@ -180,7 +198,7 @@ src/tokstash/
 ├── models/
 │   └── stream.py             # StreamInfo data model
 ├── infrastructure/
-│   ├── tiktok_client.py      # TikTok live detection (curl_cffi)
+│   ├── tiktok_client.py      # TikTok live detection (curl_cffi + Webcast API)
 │   ├── telegram.py           # Telegram upload (python-telegram-bot)
 │   └── ffmpeg.py             # ffmpeg segment download + stall detection
 └── services/
@@ -190,31 +208,47 @@ src/tokstash/
 ## How It Works
 
 1. **Live check**: Fetches the TikTok live page with `curl_cffi` impersonating Chrome 120
-   to bypass WAF. Extracts stream URLs (FLV HD, FLV LD, HLS) and room metadata from the HTML.
+   to bypass WAF. Extracts stream URLs (FLV HD, FLV LD, HLS) and `roomId` from the HTML.
 
-2. **Download**: ffmpeg captures the FLV stream, saves as MPEG-TS (`.ts`) — a container
+2. **Webcast verification**: The `roomId` is cross-checked against TikTok's internal Webcast
+   API (`webcast.tiktok.com/webcast/room/info/`). This is the definitive live check — the
+   same API the browser uses. Eliminates false positives from stale rooms that the page HTML
+   still advertises briefly after a stream ends.
+
+3. **User existence check**: Non-existent accounts (typos, deleted users) are rejected
+   immediately — no pointless retries.
+
+4. **Download**: ffmpeg captures the FLV stream, saves as MPEG-TS (`.ts`) — a container
    designed for streaming that stays playable even if interrupted.
 
-3. **Stall detection**: While ffmpeg runs, the script monitors the output file size every
+5. **Stall detection**: While ffmpeg runs, the script monitors the output file size every
    second. If it doesn't grow for 15 seconds, the stream likely ended — cuts the segment
    short instead of waiting the full minute.
 
-4. **Remux**: Completed `.ts` segment is quickly remuxed to `.mp4` (`ffmpeg -c copy`,
+6. **Short stream handling**: If a stream ends mid-download, the partial segment is kept
+   and uploaded — even if it's only a few seconds long or under 1 MB.
+
+7. **Graceful Ctrl+C**: Press Ctrl+C during a download. The current segment finishes
+   immediately, gets remuxed to MP4, and uploaded to Telegram before the script exits.
+
+8. **Remux**: Completed `.ts` segment is quickly remuxed to `.mp4` (`ffmpeg -c copy`,
    no re-encoding, takes ~1 second).
 
-5. **Upload**: `.mp4` is uploaded to Telegram via python-telegram-bot, then both
+9. **Upload**: `.mp4` is uploaded to Telegram via python-telegram-bot, then both
    `.ts` and `.mp4` are deleted from disk. Upload runs in a background thread so the
    next segment starts downloading immediately. Failed uploads retry 3 times.
 
-6. **Monitor loop**: When the stream ends, the script waits 3 minutes, then checks
-   again. If the user starts streaming again, it resumes automatically.
+10. **Monitor loop**: When the stream ends, the script waits 3 minutes, then checks
+    again. If the user starts streaming again, it resumes automatically.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
-| "User is not live" when they are | TikTok WAF may have changed — try `uv sync --reinstall` |
-| Telegram upload fails | Check `.env` values, run `uv run python -c "from tokstash.infrastructure.telegram import TelegramUploader; print(TelegramUploader().is_configured())"` |
+| "does not exist on TikTok" for a real account | Rare WAF challenge — just retry. The check retries 3 times automatically |
+| "LIVE!" but download fails immediately | Stream URL expired between page load and ffmpeg start. The Webcast API prevents most of these, but race conditions can still happen |
+| Telegram upload fails with "Request Entity Too Large" | Increase the limit via BotFather `/setuploadsize` (max 2000 MB) |
+| Telegram upload fails for other reasons | Check `.env` values, run `uv run python -c "from tokstash.infrastructure.telegram import TelegramUploader; print(TelegramUploader().is_configured())"` |
 | ffmpeg not found | Install ffmpeg: `sudo apt install ffmpeg` or `brew install ffmpeg` |
 | `tokstash: command not found` | Run via `uv run tokstash ...` |
 | Segments still show `_part001` | Run `uv sync --reinstall` to update installed scripts |
