@@ -2,7 +2,6 @@
 
 import re
 import time
-from typing import Optional
 
 from curl_cffi import requests
 
@@ -123,7 +122,7 @@ class TikTokClient:
         room = data.get("data", {})
         return room.get("status") == 2
 
-    def get_stream_info(self, username: str) -> Optional[StreamInfo]:
+    def get_stream_info(self, username: str) -> StreamInfo | None:
         """Fetch the TikTok live page and extract stream URLs.
 
         Makes a single HTTP request to the user's live page. If the page

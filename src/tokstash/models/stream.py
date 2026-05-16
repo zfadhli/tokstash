@@ -1,7 +1,5 @@
 """Stream information model for TikTok livestreams."""
 
-from typing import Optional
-
 from pydantic import BaseModel
 
 
@@ -17,10 +15,10 @@ class StreamInfo(BaseModel):
     """
 
     room_id: str
-    flv_hd: Optional[str] = None
-    flv_ld: Optional[str] = None
-    hls_hd: Optional[str] = None
-    hls_ld: Optional[str] = None
+    flv_hd: str | None = None
+    flv_ld: str | None = None
+    hls_hd: str | None = None
+    hls_ld: str | None = None
 
     def best_url(self) -> str | None:
         """Pick the best available stream URL.
