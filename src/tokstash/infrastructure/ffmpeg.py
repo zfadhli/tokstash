@@ -70,18 +70,20 @@ class SegmentDownloader:
         seg_path = Path(output_path)
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        self._monitor_progress(proc, seg_path, running_signal)
+        reason = self._monitor_progress(proc, seg_path, running_signal)
 
         if not seg_path.exists():
             return False
 
         size = seg_path.stat().st_size
 
-        # When the download was interrupted by Ctrl+C (running_signal became
-        # False), keep the partial file even if it's tiny — we'll remux and
-        # upload whatever we got.
-        was_interrupted = running_signal is not None and not running_signal[0]
-        if size < self._min_bytes and not was_interrupted:
+        # Keep the partial file when:
+        # - user pressed Ctrl+C (interrupted)
+        # - the stream ended naturally before the full duration (stream_ended)
+        # Discard it when ffmpeg failed to connect (stale URL) or stalled
+        # with no real data.
+        keep_anyway = reason in ("interrupted", "stream_ended")
+        if size < self._min_bytes and not keep_anyway:
             seg_path.unlink(missing_ok=True)
             return False
 
@@ -94,14 +96,21 @@ class SegmentDownloader:
         proc: subprocess.Popen[bytes],
         seg_path: Path,
         running_signal: list[bool] | None = None,
-    ) -> None:
-        """Monitor ffmpeg progress and detect stalls.
+    ) -> str:
+        """Monitor ffmpeg progress and detect stalls or stream end.
 
         Args:
             proc: The running ffmpeg subprocess.
             seg_path: Path to the output file being written.
             running_signal: Shared mutable flag for graceful shutdown.
                 When the flag becomes False, ffmpeg is terminated immediately.
+
+        Returns:
+            Reason ffmpeg stopped:
+            - ``"completed"``: ffmpeg ran the full requested duration.
+            - ``"stream_ended"``: ffmpeg exited early (source stream closed).
+            - ``"stalled"``: terminated due to no file growth.
+            - ``"interrupted"``: terminated due to Ctrl+C.
 
         Raises:
             KeyboardInterrupt: Propagated from user's Ctrl+C during download.
@@ -110,15 +119,25 @@ class SegmentDownloader:
         last_size = 0
         stalled_since: float | None = None
         seg_name = seg_path.name
+        terminated = False
 
         try:
-            while proc.poll() is None:
+            while True:
+                code = proc.poll()
+                if code is not None:
+                    # ffmpeg exited on its own before the full duration.
+                    # Exit code 0 = stream played and then the source
+                    # closed (natural end). Non-zero = connection error
+                    # (stale/expired URL, server rejected us, etc.).
+                    proc.wait()
+                    return "stream_ended" if code == 0 else "failed"
+
                 # Check for graceful shutdown via Ctrl+C
                 if running_signal is not None and not running_signal[0]:
                     print(f"\r  [{seg_name}]  (interrupted)")
                     proc.terminate()
-                    proc.wait()
-                    return
+                    terminated = True
+                    break
 
                 elapsed = int(time.time() - start)
                 m, s = divmod(elapsed, 60)
@@ -132,6 +151,7 @@ class SegmentDownloader:
                         elif time.time() - stalled_since > self._stall_seconds:
                             print(f"\r  [{seg_name}]  (stalled)")
                             proc.terminate()
+                            terminated = True
                             break
                     else:
                         stalled_since = None
@@ -146,3 +166,5 @@ class SegmentDownloader:
             proc.terminate()
             proc.wait()
             raise
+
+        return "interrupted" if terminated else "completed"
