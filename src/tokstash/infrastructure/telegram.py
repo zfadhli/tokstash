@@ -106,6 +106,9 @@ class TelegramUploader:
         if not mp4_path:
             return False
 
+        # Remove the .ts file now that .mp4 is ready — no need to keep both
+        ts_path.unlink(missing_ok=True)
+
         cap = caption or mp4_path.name
         last_exc: Exception | None = None
 
