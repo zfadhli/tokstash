@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 
 from telegram import Bot
-from telegram.error import BadRequest
 
 _logger = logging.getLogger(__name__)
 
@@ -46,6 +45,18 @@ UPLOAD_RETRIES = 3
 """int: Number of times to retry a failed upload."""
 UPLOAD_RETRY_DELAY = 2
 """int: Initial delay between upload retries (exponential backoff)."""
+
+# Increase via BotFather /setuploadsize (max 2000 MB).
+# https://core.telegram.org/bots/api#sending-files
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+"""int: Telegram Bot API file size limit (default 50 MB).
+
+Increase with BotFather's /setuploadsize, then update this value.
+Max allowed: 2000 MB (2 GB).
+"""
+
+TELEGRAM_MAX_BYTES_SAFE = int(MAX_UPLOAD_BYTES * 0.95)
+"""int: Safe target size (95% of limit) leaving margin for headers."""
 
 
 class TelegramUploader:
@@ -85,9 +96,9 @@ class TelegramUploader:
     def upload(self, file_path: str | Path, caption: str = "") -> bool:
         """Upload a .ts segment to Telegram as a playable video.
 
-        Remuxes to .mp4, then sends via Bot API with retries and
-        exponential backoff. On success, both .ts and .mp4 files
-        are deleted from disk.
+        Remuxes to .mp4, compresses if over Telegram's 50 MB limit, then
+        sends via Bot API with retries and exponential backoff. On success,
+        both .ts and .mp4 files are deleted from disk.
 
         Args:
             file_path: Path to the .ts segment file.
@@ -110,27 +121,31 @@ class TelegramUploader:
         # Remove the .ts file now that .mp4 is ready — no need to keep both
         ts_path.unlink(missing_ok=True)
 
-        cap = caption or mp4_path.name
+        # Compress if the file exceeds Telegram's 50 MB limit
+        send_path = mp4_path
+        if mp4_path.stat().st_size > MAX_UPLOAD_BYTES:
+            print(
+                f"       📦 File {mp4_path.stat().st_size / 1024 / 1024:.0f} MB exceeds"
+                f" Telegram's 50 MB limit. Re-encoding..."
+            )
+            compressed = self._compress_to_fit(mp4_path)
+            if compressed:
+                mp4_path.unlink(missing_ok=True)
+                send_path = compressed
+            else:
+                print("       ❌ Could not compress video to fit under 50 MB.")
+                return False
+
+        cap = caption or send_path.name
         last_exc: Exception | None = None
 
         for attempt in range(UPLOAD_RETRIES):
             try:
-                success = asyncio.run(self._send(mp4_path, cap))
+                success = asyncio.run(self._send(send_path, cap))
                 if success:
-                    mp4_path.unlink(missing_ok=True)
+                    send_path.unlink(missing_ok=True)
                     ts_path.unlink(missing_ok=True)
                     return True
-            except BadRequest as exc:
-                msg = str(exc).lower()
-                if "too large" in msg or "entity too large" in msg or "413" in msg:
-                    size_mb = mp4_path.stat().st_size / 1024 / 1024
-                    print(
-                        f"       ❌ File {size_mb:.0f} MB exceeds Telegram's 50 MB limit.\n"
-                        f"          Increase the limit via BotFather /setuploadsize,\n"
-                        f"          or use shorter segments (-s 0.5 for 30s)."
-                    )
-                    return False
-                raise  # let the generic handler below catch it
             except Exception as exc:
                 last_exc = exc
                 if attempt < UPLOAD_RETRIES - 1:
@@ -183,4 +198,107 @@ class TelegramUploader:
                 return mp4_path
         except Exception:
             pass
+        return None
+
+    @staticmethod
+    def _compress_to_fit(mp4_path: Path) -> Path | None:
+        """Re-encode video to fit under Telegram's 50 MB limit.
+
+        Calculates a target video bitrate based on the video duration
+        and the 50 MB cap (with margin), then re-encodes using libx264.
+        If the first pass doesn't shrink it enough, tries a lower CRF.
+
+        Args:
+            mp4_path: Path to the .mp4 file that exceeds 50 MB.
+
+        Returns:
+            Path to the compressed file, or None if compression failed.
+        """
+        import json
+
+        compressed_path = mp4_path.with_stem(mp4_path.stem + "_compressed")
+
+        # Get duration in seconds
+        probe_cmd = [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-i",
+            str(mp4_path),
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+        ]
+        try:
+            result = subprocess.run(
+                probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15
+            )
+            data = json.loads(result.stdout)
+            duration = float(data["format"]["duration"])
+        except Exception:
+            return None
+
+        if duration <= 0:
+            return None
+
+        # Reserve 128 kbps for audio, rest goes to video
+        # Target 95% of 50 MB to leave margin
+        target_bytes = TELEGRAM_MAX_BYTES_SAFE
+        audio_bitrate = 128_000  # 128 kbps
+        total_bits = target_bytes * 8
+        audio_bits = audio_bitrate * duration
+        video_bits = total_bits - audio_bits
+        video_bitrate = int(video_bits / duration)
+
+        # Don't bother if target bitrate is unreasonably low
+        if video_bitrate < 100_000:
+            return None
+
+        # Try CRF 28 first, then 32 if still too large
+        for crf in (28, 32):
+            out = (
+                compressed_path
+                if crf == 28
+                else mp4_path.with_stem(mp4_path.stem + f"_compressed_{crf}")
+            )
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(mp4_path),
+                "-c:v",
+                "libx264",
+                "-crf",
+                str(crf),
+                "-preset",
+                "fast",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-movflags",
+                "+faststart",
+                str(out),
+            ]
+            try:
+                subprocess.run(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300
+                )
+            except Exception:
+                continue
+
+            if out.exists() and out.stat().st_size > 1024:
+                # Check if it fits
+                if out.stat().st_size <= MAX_UPLOAD_BYTES:
+                    # Cleanup intermediate files
+                    if out != compressed_path:
+                        compressed_path.unlink(missing_ok=True)
+                        out.rename(compressed_path)
+                    return compressed_path
+                # Still too large, try next CRF
+                if out != compressed_path:
+                    out.unlink(missing_ok=True)
+
+        compressed_path.unlink(missing_ok=True)
         return None
