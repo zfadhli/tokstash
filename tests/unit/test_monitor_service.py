@@ -50,7 +50,12 @@ class TestMonitorService:
 
         dl = MagicMock()
 
-        def _fake_download(url: str, path: str | Path, duration: int = 60) -> bool:
+        def _fake_download(
+            url: str,
+            path: str | Path,
+            duration: int = 60,
+            running_signal: list[bool] | None = None,
+        ) -> bool:
             """Mock downloader that creates a real file."""
             Path(path).write_bytes(b"\x00" * (2 * 1024 * 1024))
             return True

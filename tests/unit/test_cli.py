@@ -1,20 +1,8 @@
-"""Tests for CLI constants and click command registration."""
+"""Tests for CLI click command registration."""
 
 from click.testing import CliRunner
 
-from tokstash.cli import MAX_RETRIES, RETRY_DELAY, cli
-
-
-class TestConstants:
-    """Module-level constants have expected values."""
-
-    def test_max_retries(self) -> None:
-        """MAX_RETRIES should be 5."""
-        assert MAX_RETRIES == 5
-
-    def test_retry_delay(self) -> None:
-        """RETRY_DELAY should be 10 seconds."""
-        assert RETRY_DELAY == 10
+from tokstash.cli import cli
 
 
 class TestCliRegistration:
