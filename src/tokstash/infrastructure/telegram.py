@@ -46,17 +46,11 @@ UPLOAD_RETRIES = 3
 UPLOAD_RETRY_DELAY = 2
 """int: Initial delay between upload retries (exponential backoff)."""
 
-# Increase via BotFather /setuploadsize (max 2000 MB).
-# https://core.telegram.org/bots/api#sending-files
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-"""int: Telegram Bot API file size limit (default 50 MB).
-
-Increase with BotFather's /setuploadsize, then update this value.
-Max allowed: 2000 MB (2 GB).
-"""
+"""int: Telegram Bot API file size limit (50 MB)."""
 
 TELEGRAM_MAX_BYTES_SAFE = int(MAX_UPLOAD_BYTES * 0.95)
-"""int: Safe target size (95% of limit) leaving margin for headers."""
+"""int: Safe target size (47.5 MB) leaving margin for headers."""
 
 
 class TelegramUploader:
