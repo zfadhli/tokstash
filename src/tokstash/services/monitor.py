@@ -78,6 +78,17 @@ class MonitorService:
         running = running_signal if running_signal is not None else [True]
         pending_uploads: list[threading.Thread] = []
 
+        def _enqueue_upload(p: Path, c: str) -> None:
+            """Start a background thread to upload a segment."""
+
+            def _run() -> None:
+                ok = self._uploader.upload(p, c)
+                print(f"       📤 Telegram: {'✅' if ok else '❌'}")
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            pending_uploads.append(t)
+
         while running[0]:
             info = self._tiktok.get_stream_info(username)
             stream_url = info.best_url() if info else None
@@ -97,18 +108,7 @@ class MonitorService:
                 print(f"       💾 {file_size:.1f} MB")
 
                 if self._uploader.is_configured():
-
-                    def _upload(u: TelegramUploader, p: Path, c: str) -> None:
-                        ok = u.upload(p, c)
-                        print(f"       📤 Telegram: {'✅' if ok else '❌'}")
-
-                    t = threading.Thread(
-                        target=_upload,
-                        args=(self._uploader, seg_path, cap),
-                        daemon=True,
-                    )
-                    t.start()
-                    pending_uploads.append(t)
+                    _enqueue_upload(seg_path, cap)
             else:
                 break
 
