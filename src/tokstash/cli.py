@@ -40,9 +40,12 @@ def download(username: str, output: str, segment: int) -> None:
     out_dir = Path(output)
 
     # Check user exists before attempting download
-    if not tiktok.user_exists(username):
+    exists = tiktok.user_exists(username)
+    if exists is False:
         click.echo(f"🔴 @{username} does not exist on TikTok.")
         sys.exit(1)
+    elif exists is None:
+        click.echo("🟡 Could not verify user — TikTok challenge page. Retrying...")
 
     running: list[bool] = [True]
 
@@ -104,9 +107,12 @@ def monitor(username: str, output: str, segment: int, retry: int) -> None:
     """
     # Check user exists before starting 24/7 monitoring
     tiktok = TikTokClient()
-    if not tiktok.user_exists(username):
+    exists = tiktok.user_exists(username)
+    if exists is False:
         click.echo(f"🔴 @{username} does not exist on TikTok.")
         sys.exit(1)
+    elif exists is None:
+        click.echo("🟡 Could not verify user — TikTok challenge page. Continuing anyway...")
 
     service = MonitorService()
     try:

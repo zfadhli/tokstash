@@ -1,6 +1,7 @@
 """Client for TikTok live page scraping with WAF bypass."""
 
 import re
+import time
 from typing import Optional
 
 from curl_cffi import requests
@@ -32,36 +33,52 @@ class TikTokClient:
     Uses curl_cffi with Chrome TLS impersonation to bypass TikTok's WAF.
     """
 
-    def user_exists(self, username: str) -> bool:
+    def user_exists(self, username: str) -> bool | None:
         """Check if a TikTok account exists (regardless of live status).
 
-        Makes a single HTTP request to the user's live page and checks
-        whether the page contains the user's ``uniqueId`` in its embedded
-        data. Non-existent accounts return a 404-style page without any
-        uniqueId, while real accounts (even offline) include it.
+        Makes up to three HTTP requests to the user's live page. TikTok
+        sometimes returns a WAF challenge page (~1.4 KB with ``slardar``)
+        instead of the real page, so retries are built in.
 
         Args:
             username: TikTok username (without @ prefix).
 
         Returns:
-            True if the account exists, False otherwise.
+            ``True`` if the account exists.
+            ``False`` if the account definitely does not exist.
+            ``None`` if the check was inconclusive (all requests hit a
+            challenge page).
         """
-        try:
-            resp = requests.get(
-                TIKTOK_LIVE_URL.format(username=username),
-                headers=REQUEST_HEADERS,
-                impersonate="chrome120",
-            )
-        except Exception:
+        for attempt in range(3):
+            try:
+                resp = requests.get(
+                    TIKTOK_LIVE_URL.format(username=username),
+                    headers=REQUEST_HEADERS,
+                    impersonate="chrome120",
+                )
+            except Exception:
+                continue
+
+            if resp.status_code != 200:
+                return False
+
+            # Tiny response (~1.4 KB) with slardar = WAF challenge page.
+            # Retry instead of concluding the user doesn't exist.
+            if len(resp.text) < 5000 and "slardar" in resp.text:
+                time.sleep(1)
+                continue
+
+            # Real users have their uniqueId embedded in the page data.
+            # Non-existent accounts return a page with no uniqueId at all.
+            pattern = rf'"uniqueId"\s*:\s*"{re.escape(username)}"'
+            if re.search(pattern, resp.text):
+                return True
+
+            # Full page returned but uniqueId missing — user doesn't exist.
             return False
 
-        if resp.status_code != 200:
-            return False
-
-        # Real users have their uniqueId embedded in the page data.
-        # Non-existent accounts return a page with no uniqueId at all.
-        pattern = rf'"uniqueId"\s*:\s*"{re.escape(username)}"'
-        return bool(re.search(pattern, resp.text))
+        # All attempts hit a challenge page — inconclusive.
+        return None
 
     def get_stream_info(self, username: str) -> Optional[StreamInfo]:
         """Fetch the TikTok live page and extract stream URLs.
