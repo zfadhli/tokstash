@@ -87,16 +87,16 @@ class TikTokClient:
         indicates the user is live, parses stream URLs from the HTML using
         regex (both FLV and HLS variants at HD and LD quality).
 
-        The best stream URL is then probed with a lightweight Range GET.
-        TikTok's CDN returns 404 for expired/stale URLs (stream ended
-        between page load and probe), so we reject those.
+        Stale/expired stream URLs are not detected here — the downloader
+        will fail fast if the URL is dead (ffmpeg exits non-zero) and the
+        segment is discarded.
 
         Args:
             username: TikTok username (without @ prefix).
 
         Returns:
             A StreamInfo with available stream URLs, or None if the user
-            is offline, the page can't be loaded, or the URL is stale.
+            is offline or the page can't be loaded.
         """
         try:
             resp = requests.get(
@@ -118,54 +118,7 @@ class TikTokClient:
         if best is None:
             return None
 
-        # Probe the stream URL to verify it's actually serving data.
-        # TikTok's CDN expires URLs very quickly after a stream ends.
-        if not self._probe_stream_url(best):
-            return None
-
         return info
-
-    @staticmethod
-    def _probe_stream_url(url: str) -> bool:
-        """Quick-check whether a stream URL is actually serving data.
-
-        Uses ffprobe with a 2-second timeout. TikTok's CDN returns 404
-        (via HTTP) or simply stops responding for expired URLs — ffprobe
-        detects this instantly and exits with code 1. For a live stream
-        ffprobe connects and returns code 0.
-
-        Args:
-            url: The stream URL to probe.
-
-        Returns:
-            True if the URL appears to be serving a live stream,
-            False if it's stale/unreachable.
-        """
-        import subprocess
-
-        cmd = [
-            "ffprobe",
-            "-v",
-            "quiet",
-            "-t",
-            "2",
-            "-i",
-            url,
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-        ]
-        try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-            return result.returncode == 0
-        except Exception:
-            return False
 
     @staticmethod
     def _parse_stream_info(html: str) -> StreamInfo | None:
